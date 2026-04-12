@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sentinel Prism — color tokens (reference)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: #0f1419; color: #e8eaed; }
+    h1 { font-size: 1.1rem; margin: 0 0 0.5rem; }
+    p { font-size: 0.85rem; opacity: 0.75; max-width: 70ch; line-height: 1.5; margin: 0 0 1.25rem; }
+    h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.55; margin: 1.25rem 0 0.5rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.65rem; }
+    .swatch {
+      border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1);
+      font-size: 0.72rem;
+    }
+    .color { height: 56px; }
+    .meta { padding: 0.45rem 0.5rem; background: rgba(255,255,255,0.04); }
+    code { font-size: 0.68rem; opacity: 0.85; }
+  </style>
+</head>
+<body>
+  <h1>Sentinel Prism — neutral & semantic reference</h1>
+  <p>
+    Illustrative swatches aligned to the UX spec: <strong>cool neutrals</strong> for surfaces,
+    <strong>semantic</strong> severity (always pair with icon + text in UI). Verify contrast in app context; this is not a compliance certificate.
+  </p>
+
+  <h2>Surfaces (light mode targets)</h2>
+  <div class="grid">
+    <div class="swatch"><div class="color" style="background:#ffffff"></div><div class="meta"><strong>surface / main</strong><br /><code>#ffffff</code></div></div>
+    <div class="swatch"><div class="color" style="background:#f4f5f7"></div><div class="meta"><strong>canvas</strong><br /><code>#f4f5f7</code></div></div>
+    <div class="swatch"><div class="color" style="background:rgba(255,255,255,0.55);backdrop-filter:blur(12px)"></div><div class="meta"><strong>chrome glass</strong><br /><code>rgba + blur</code></div></div>
+    <div class="swatch"><div class="color" style="background:#e5e7eb"></div><div class="meta"><strong>border hairline</strong><br /><code>#e5e7eb</code></div></div>
+  </div>
+
+  <h2>Severity (examples — tune in theme)</h2>
+  <div class="grid">
+    <div class="swatch"><div class="color" style="background:#dc2626"></div><div class="meta"><strong>critical</strong><br /><code>#dc2626</code></div></div>
+    <div class="swatch"><div class="color" style="background:#d97706"></div><div class="meta"><strong>high</strong><br /><code>#d97706</code></div></div>
+    <div class="swatch"><div class="color" style="background:#ca8a04"></div><div class="meta"><strong>medium</strong><br /><code>#ca8a04</code></div></div>
+    <div class="swatch"><div class="color" style="background:#64748b"></div><div class="meta"><strong>low</strong><br /><code>#64748b</code></div></div>
+  </div>
+
+  <h2>Actions</h2>
+  <div class="grid">
+    <div class="swatch"><div class="color" style="background:#2563eb"></div><div class="meta"><strong>primary (example)</strong><br /><code>#2563eb</code></div></div>
+    <div class="swatch"><div class="color" style="background:#b91c1c"></div><div class="meta"><strong>danger</strong><br /><code>#b91c1c</code></div></div>
+  </div>
+</body>
+</html>

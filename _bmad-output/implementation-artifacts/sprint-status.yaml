@@ -1,0 +1,104 @@
+# generated: 2026-04-12T12:00:00Z
+# last_updated: 2026-04-12T12:00:00Z
+# project: Sentinel Prism
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: {project-root}/_bmad-output/implementation-artifacts
+#
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: "2026-04-12T12:00:00Z"
+last_updated: "2026-04-12T12:00:00Z"
+project: Sentinel Prism
+project_key: NOKEY
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  epic-1: backlog
+  1-1-initialize-application-skeleton-per-architecture: backlog
+  1-2-postgresql-schema-core-and-alembic-migrations: backlog
+  1-3-local-user-accounts-and-session-or-token-auth: backlog
+  1-4-rbac-enforcement-on-api-routes: backlog
+  1-5-auth-provider-interface-stub-for-future-idp: backlog
+  epic-1-retrospective: optional
+
+  epic-2: backlog
+  2-1-source-registry-crud-api-and-persistence: backlog
+  2-2-scheduled-and-manual-poll-triggers: backlog
+  2-3-rss-http-connector-implementation-direct-path: backlog
+  2-4-deduplication-and-retry-with-backoff: backlog
+  2-5-fallback-endpoints-and-enable-disable: backlog
+  2-6-per-source-metrics-exposure: backlog
+  epic-2-retrospective: optional
+
+  epic-3: backlog
+  3-1-persist-raw-captures-and-normalized-records: backlog
+  3-2-define-agentstate-and-graph-compilation-shell: backlog
+  3-3-implement-scout-and-normalize-nodes-wired-in-graph: backlog
+  3-4-classify-node-with-rules-llm-and-structured-output: backlog
+  3-5-conditional-edges-for-review-vs-continue: backlog
+  3-6-retry-policy-on-transient-node-failures: backlog
+  3-7-pluggable-web-search-tool-tavily-default: backlog
+  3-8-pipeline-generated-audit-events: backlog
+  epic-3-retrospective: optional
+
+  epic-4: backlog
+  4-1-review-queue-api-and-workflow-state-integration: backlog
+  4-2-approve-reject-override-with-notes: backlog
+  4-3-briefing-generation-and-grouping: backlog
+  epic-4-retrospective: optional
+
+  epic-5: backlog
+  5-1-routing-rules-engine: backlog
+  5-2-in-app-notifications: backlog
+  5-3-external-channel-email-or-slack-sandbox-with-delivery-log: backlog
+  5-4-immediate-vs-digest-scheduling: backlog
+  5-5-regulatory-filing-guardrail: backlog
+  epic-5-retrospective: optional
+
+  epic-6: backlog
+  6-1-overview-dashboard-widgets: backlog
+  6-2-update-explorer-with-filters-and-detail-side-by-side: backlog
+  6-3-admin-routing-and-escalation-table-management-ui: backlog
+  epic-6-retrospective: optional
+
+  epic-7: backlog
+  7-1-user-feedback-capture-on-updates: backlog
+  7-2-feedback-metrics-view-for-admin: backlog
+  7-3-governed-threshold-and-prompt-change-proposals: backlog
+  7-4-golden-set-policy-and-configuration-history: backlog
+  epic-7-retrospective: optional
+
+  epic-8: backlog
+  8-1-audit-event-search-api-and-ui: backlog
+  8-2-workflow-replay-from-persisted-state: backlog
+  8-3-cross-service-observability-dashboard-operator: backlog
+  epic-8-retrospective: optional

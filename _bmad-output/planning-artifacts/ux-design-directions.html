@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sentinel Prism — UX Design Directions</title>
+  <style>
+    :root {
+      --ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+      background: #0f1419;
+      color: #e8eaed;
+      min-height: 100vh;
+    }
+    header.page {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      position: sticky;
+      top: 0;
+      background: rgba(15,20,25,0.85);
+      backdrop-filter: blur(12px);
+      z-index: 10;
+    }
+    header.page h1 {
+      margin: 0 0 0.35rem;
+      font-size: 1.15rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    header.page p {
+      margin: 0;
+      font-size: 0.875rem;
+      opacity: 0.75;
+      max-width: 72ch;
+      line-height: 1.5;
+    }
+    .tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.35rem;
+      padding: 1rem 1.5rem 0;
+    }
+    .tabs button {
+      appearance: none;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.04);
+      color: inherit;
+      padding: 0.45rem 0.75rem;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
+    }
+    .tabs button:hover { background: rgba(255,255,255,0.08); }
+    .tabs button[aria-selected="true"] {
+      background: rgba(94, 163, 255, 0.18);
+      border-color: rgba(94, 163, 255, 0.45);
+      color: #b8d4ff;
+    }
+    .panel-wrap {
+      padding: 1rem 1.5rem 2rem;
+    }
+    section.direction {
+      display: none;
+      animation: fadeIn 0.2s var(--ease);
+    }
+    section.direction.active { display: block; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .dir-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      opacity: 0.55;
+      margin-bottom: 0.75rem;
+    }
+    .mock {
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid rgba(0,0,0,0.12);
+      box-shadow: 0 24px 48px rgba(0,0,0,0.35);
+      min-height: 420px;
+      display: grid;
+      grid-template-columns: 200px 1fr;
+    }
+    @media (max-width: 720px) {
+      .mock { grid-template-columns: 1fr; }
+      .mock nav { display: none; }
+    }
+    .mock nav {
+      padding: 0.75rem 0;
+      font-size: 0.8rem;
+    }
+    .mock nav a {
+      display: block;
+      padding: 0.45rem 1rem;
+      color: inherit;
+      text-decoration: none;
+      opacity: 0.75;
+    }
+    .mock nav a.active { opacity: 1; font-weight: 600; }
+    .mock main { padding: 1rem 1.1rem 1.25rem; }
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 0.65rem;
+      margin-bottom: 1rem;
+    }
+    @media (max-width: 900px) {
+      .kpi-row { grid-template-columns: repeat(2, 1fr); }
+    }
+    .card {
+      border-radius: 10px;
+      padding: 0.65rem 0.75rem;
+      font-size: 0.78rem;
+    }
+    .card .k { opacity: 0.65; font-size: 0.7rem; margin-bottom: 0.2rem; }
+    .card .v { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em; }
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.76rem;
+    }
+    table.data th {
+      text-align: left;
+      font-weight: 500;
+      opacity: 0.65;
+      padding: 0.4rem 0.5rem;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
+    }
+    table.data td {
+      padding: 0.5rem 0.5rem;
+      border-bottom: 1px solid rgba(0,0,0,0.06);
+      vertical-align: top;
+    }
+    .sev {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-weight: 600;
+      font-size: 0.72rem;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .meta { opacity: 0.7; font-size: 0.72rem; margin-top: 0.15rem; }
+
+    /* Direction A — Liquid Glass Enterprise */
+    #dir-a .mock { background: #f4f5f7; color: #1c1e21; }
+    #dir-a .mock nav {
+      background: rgba(255,255,255,0.55);
+      backdrop-filter: blur(16px);
+      border-right: 1px solid rgba(0,0,0,0.06);
+    }
+    #dir-a .mock main { background: #fff; }
+    #dir-a .card {
+      background: rgba(255,255,255,0.92);
+      border: 1px solid rgba(0,0,0,0.06);
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    #dir-a .sev-high .dot { background: #d97706; }
+    #dir-a .sev-crit .dot { background: #dc2626; }
+
+    /* B — Dense operations */
+    #dir-b .mock { background: #eceef1; color: #14161a; }
+    #dir-b .mock nav { background: #e2e4e8; border-right: 1px solid #d5d8de; }
+    #dir-b .mock main { background: #fafbfc; }
+    #dir-b .card { background: #fff; border: 1px solid #d8dce3; padding: 0.45rem 0.5rem; }
+    #dir-b .card .v { font-size: 1rem; }
+    #dir-b table.data { font-size: 0.72rem; }
+    #dir-b table.data td, #dir-b table.data th { padding: 0.28rem 0.4rem; }
+    #dir-b .sev-high .dot { background: #b45309; }
+    #dir-b .sev-crit .dot { background: #b91c1c; }
+
+    /* C — Split-first (strong pane) */
+    #dir-c .mock { grid-template-columns: 220px 1fr; background: #f0f2f5; color: #1a1d21; }
+    #dir-c .mock nav { background: #fff; border-right: 2px solid #dfe3ea; }
+    #dir-c .mock main { background: linear-gradient(90deg, #f7f8fa 0%, #fff 32%); }
+    #dir-c .card { background: #fff; border: 1px solid #e1e5eb; }
+    #dir-c .kpi-row { gap: 0.5rem; }
+    #dir-c .sev-high .dot { background: #d97706; }
+    #dir-c .sev-crit .dot { background: #dc2626; }
+
+    /* D — Warm neutral */
+    #dir-d .mock { background: #f6f3ef; color: #252220; }
+    #dir-d .mock nav { background: rgba(255,252,248,0.85); border-right: 1px solid #e8e0d8; }
+    #dir-d .mock main { background: #fffcf8; }
+    #dir-d .card { background: #fffaf5; border: 1px solid #ebe4dc; }
+    #dir-d .sev-high .dot { background: #b45309; }
+    #dir-d .sev-crit .dot { background: #b91c1c; }
+
+    /* E — High-contrast semantic */
+    #dir-e .mock { background: #eef1f6; color: #0f1218; }
+    #dir-e .mock nav { background: #fff; border-right: 1px solid #c5ccd8; }
+    #dir-e .mock main { background: #fff; }
+    #dir-e .card { background: #f8fafc; border: 1px solid #94a3b8; }
+    #dir-e .sev-high { color: #b45309; }
+    #dir-e .sev-crit { color: #b91c1c; }
+    #dir-e .sev-high .dot { background: currentColor; }
+    #dir-e .sev-crit .dot { background: currentColor; }
+
+    /* F — Minimal flat */
+    #dir-f .mock { background: #fff; color: #111; border: 1px solid #ddd; box-shadow: none; }
+    #dir-f .mock nav { background: #fafafa; border-right: 1px solid #eee; }
+    #dir-f .card { background: #fafafa; border: 1px solid #e5e5e5; box-shadow: none; }
+    #dir-f .sev-high .dot { background: #ea580c; }
+    #dir-f .sev-crit .dot { background: #dc2626; }
+
+    /* G — Dark chrome */
+    #dir-g .mock { background: #111418; color: #e8eaed; grid-template-columns: 200px 1fr; }
+    #dir-g .mock nav {
+      background: #0c0f12;
+      border-right: 1px solid rgba(255,255,255,0.08);
+    }
+    #dir-g .mock main { background: #161a20; }
+    #dir-g .card { background: #1c2128; border: 1px solid rgba(255,255,255,0.08); }
+    #dir-g table.data th { border-color: rgba(255,255,255,0.1); }
+    #dir-g table.data td { border-color: rgba(255,255,255,0.06); }
+    #dir-g .sev-high .dot { background: #f59e0b; }
+    #dir-g .sev-crit .dot { background: #f87171; }
+
+    /* H — Briefing-forward */
+    #dir-h .mock { background: #f3f5f8; color: #15181e; grid-template-columns: 200px 1fr; }
+    #dir-h .mock nav { background: rgba(255,255,255,0.7); backdrop-filter: blur(12px); border-right: 1px solid rgba(0,0,0,0.07); }
+    #dir-h .mock main { background: #fff; }
+    #dir-h .brief-hero {
+      grid-column: 1 / -1;
+      padding: 0.75rem 1rem;
+      background: linear-gradient(180deg, #f0f6ff 0%, #fff 100%);
+      border-bottom: 1px solid rgba(0,0,0,0.06);
+      font-size: 0.85rem;
+    }
+    #dir-h .mock { grid-template-rows: auto 1fr; grid-template-columns: 200px 1fr; }
+    #dir-h .mock nav { grid-row: 2; grid-column: 1; }
+    #dir-h .mock main { grid-row: 2; grid-column: 2; }
+    #dir-h .brief-hero { grid-row: 1; grid-column: 1 / -1; }
+    #dir-h .card { background: #fff; border: 1px solid rgba(0,0,0,0.06); }
+    #dir-h .sev-high .dot { background: #d97706; }
+    #dir-h .sev-crit .dot { background: #dc2626; }
+
+    .compare-note {
+      margin-top: 1rem;
+      font-size: 0.8rem;
+      opacity: 0.75;
+      max-width: 85ch;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <header class="page">
+    <h1>Sentinel Prism — design direction explorer</h1>
+    <p>
+      Eight static mock slices (Overview + table excerpt). Compare layout weight, chrome treatment, and severity emphasis.
+      <strong>Direction A</strong> matches the spec: liquid-glass chrome, solid reading surfaces, calm hierarchy.
+      Open this file in a browser from your planning artifacts folder.
+    </p>
+  </header>
+
+  <div class="tabs" role="tablist" aria-label="Design directions">
+    <button type="button" role="tab" id="tab-a" aria-selected="true" aria-controls="dir-a">A — Liquid Glass</button>
+    <button type="button" role="tab" id="tab-b" aria-controls="dir-b">B — Dense ops</button>
+    <button type="button" role="tab" id="tab-c" aria-controls="dir-c">C — Split-first</button>
+    <button type="button" role="tab" id="tab-d" aria-controls="dir-d">D — Warm neutral</button>
+    <button type="button" role="tab" id="tab-e" aria-controls="dir-e">E — Semantic contrast</button>
+    <button type="button" role="tab" id="tab-f" aria-controls="dir-f">F — Minimal flat</button>
+    <button type="button" role="tab" id="tab-g" aria-controls="dir-g">G — Dark chrome</button>
+    <button type="button" role="tab" id="tab-h" aria-controls="dir-h">H — Briefing-forward</button>
+  </div>
+
+  <div class="panel-wrap">
+    <!-- Shared mock inner -->
+    <!-- A -->
+    <section class="direction active" id="dir-a" role="tabpanel" aria-labelledby="tab-a">
+      <div class="dir-label">A — Liquid Glass Enterprise (recommended default)</div>
+      <div class="mock" aria-label="Direction A mock">
+        <nav>
+          <a class="active" href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical (7d)</div><div class="v">3</div></div>
+            <div class="card"><div class="k">In review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New items</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Top source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Confidence</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A update<br /><span class="meta">run_id · 8f3a… · 2 min ago</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82 · medium band</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance correction<br /><span class="meta">run_id · 1c9b… · 14 min ago</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Critical</span></td>
+                <td>0.71 · review suggested</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">Frosted nav; white content plane; soft card shadows. Best default for PRD + Liquid Glass rules.</p>
+    </section>
+
+    <section class="direction" id="dir-b" role="tabpanel" aria-labelledby="tab-b" hidden>
+      <div class="dir-label">B — Dense operations</div>
+      <div class="mock" aria-label="Direction B mock">
+        <nav>
+          <a class="active" href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical</div><div class="v">3</div></div>
+            <div class="card"><div class="k">Review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Conf.</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A<br /><span class="meta">8f3a…</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance<br /><span class="meta">1c9b…</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Crit</span></td>
+                <td>0.71</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">Tighter rows, smaller KPIs—use for power users or “compact” density mode.</p>
+    </section>
+
+    <section class="direction" id="dir-c" role="tabpanel" aria-labelledby="tab-c" hidden>
+      <div class="dir-label">C — Split-first hierarchy</div>
+      <div class="mock" aria-label="Direction C mock">
+        <nav>
+          <a class="active" href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical (7d)</div><div class="v">3</div></div>
+            <div class="card"><div class="k">In review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New items</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Top source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Confidence</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A update<br /><span class="meta">run_id · 8f3a…</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance correction<br /><span class="meta">run_id · 1c9b…</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Critical</span></td>
+                <td>0.71</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">Stronger separation between nav and canvas; good if explorer master–detail is the hero.</p>
+    </section>
+
+    <section class="direction" id="dir-d" role="tabpanel" aria-labelledby="tab-d" hidden>
+      <div class="dir-label">D — Warm neutral</div>
+      <div class="mock" aria-label="Direction D mock">
+        <nav>
+          <a class="active" href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical (7d)</div><div class="v">3</div></div>
+            <div class="card"><div class="k">In review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New items</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Top source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Confidence</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A update<br /><span class="meta">run_id · 8f3a…</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance correction<br /><span class="meta">run_id · 1c9b…</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Critical</span></td>
+                <td>0.71</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">Warm paper-like neutrals—use if brand later leans away from cool gray.</p>
+    </section>
+
+    <section class="direction" id="dir-e" role="tabpanel" aria-labelledby="tab-e" hidden>
+      <div class="dir-label">E — High-contrast semantic</div>
+      <div class="mock" aria-label="Direction E mock">
+        <nav>
+          <a class="active" href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical (7d)</div><div class="v">3</div></div>
+            <div class="card"><div class="k">In review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New items</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Top source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Confidence</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A update<br /><span class="meta">run_id · 8f3a…</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance correction<br /><span class="meta">run_id · 1c9b…</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Critical</span></td>
+                <td>0.71</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">Stronger hue + text color on severity—still paired with dots; validate contrast for WCAG.</p>
+    </section>
+
+    <section class="direction" id="dir-f" role="tabpanel" aria-labelledby="tab-f" hidden>
+      <div class="dir-label">F — Minimal flat</div>
+      <div class="mock" aria-label="Direction F mock">
+        <nav>
+          <a class="active" href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical (7d)</div><div class="v">3</div></div>
+            <div class="card"><div class="k">In review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New items</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Top source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Confidence</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A update<br /><span class="meta">run_id · 8f3a…</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance correction<br /><span class="meta">run_id · 1c9b…</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Critical</span></td>
+                <td>0.71</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">No blur; maximum clarity for low-GPU or strict flat org standards. Pair with strong typography.</p>
+    </section>
+
+    <section class="direction" id="dir-g" role="tabpanel" aria-labelledby="tab-g" hidden>
+      <div class="dir-label">G — Dark chrome shell</div>
+      <div class="mock" aria-label="Direction G mock">
+        <nav>
+          <a class="active" href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical (7d)</div><div class="v">3</div></div>
+            <div class="card"><div class="k">In review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New items</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Top source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Confidence</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A update<br /><span class="meta">run_id · 8f3a…</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance correction<br /><span class="meta">run_id · 1c9b…</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Critical</span></td>
+                <td>0.71</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">Optional dark shell for long sessions; validate contrast on semantic colors and tables.</p>
+    </section>
+
+    <section class="direction" id="dir-h" role="tabpanel" aria-labelledby="tab-h" hidden>
+      <div class="dir-label">H — Briefing-forward overview</div>
+      <div class="mock" aria-label="Direction H mock">
+        <div class="brief-hero">
+          <strong>Latest briefing</strong> — EU labeling changes (Apr 8–12) · <span style="opacity:0.75">12 updates · Critical 1 · High 4</span>
+        </div>
+        <nav>
+          <a href="#">Overview</a>
+          <a href="#">Explorer</a>
+          <a href="#">Review</a>
+          <a class="active" href="#">Briefings</a>
+          <a href="#">Sources</a>
+          <a href="#">Audit</a>
+        </nav>
+        <main>
+          <div class="kpi-row">
+            <div class="card"><div class="k">Critical (7d)</div><div class="v">3</div></div>
+            <div class="card"><div class="k">In review</div><div class="v">12</div></div>
+            <div class="card"><div class="k">New items</div><div class="v">28</div></div>
+            <div class="card"><div class="k">Top source</div><div class="v">EMA</div></div>
+          </div>
+          <table class="data">
+            <thead><tr><th>Update</th><th>Severity</th><th>Confidence</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>EMA · Labeling Q&amp;A update<br /><span class="meta">run_id · 8f3a…</span></td>
+                <td><span class="sev sev-high"><span class="dot"></span>High</span></td>
+                <td>0.82</td>
+              </tr>
+              <tr>
+                <td>FDA · Guidance correction<br /><span class="meta">run_id · 1c9b…</span></td>
+                <td><span class="sev sev-crit"><span class="dot"></span>Critical</span></td>
+                <td>0.71</td>
+              </tr>
+            </tbody>
+          </table>
+        </main>
+      </div>
+      <p class="compare-note">Highlights digest/briefing narrative on the landing path—good if “briefing first” wins over raw explorer.</p>
+    </section>
+  </div>
+
+  <script>
+    const tabs = document.querySelectorAll('[role="tab"]');
+    const panels = document.querySelectorAll('[role="tabpanel"]');
+    function show(id) {
+      panels.forEach((p) => {
+        const on = p.id === id;
+        p.classList.toggle('active', on);
+        p.hidden = !on;
+      });
+      tabs.forEach((t) => {
+        const on = t.getAttribute('aria-controls') === id;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    }
+    tabs.forEach((t) => {
+      t.addEventListener('click', () => show(t.getAttribute('aria-controls')));
+    });
+  </script>
+</body>
+</html>
