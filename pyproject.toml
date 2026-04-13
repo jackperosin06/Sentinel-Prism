@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel-prism"
+version = "0.1.0"
+description = "Sentinel Prism API and orchestration (monorepo root package)."
+readme = "README.md"
+requires-python = ">=3.11"
+# Runtime pins live in requirements.txt for this bootstrap (Story 1.1); keep in sync or consolidate later.
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

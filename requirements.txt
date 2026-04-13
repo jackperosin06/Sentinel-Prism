@@ -1,2 +1,7 @@
-langgraph
-langchain
+# Runtime (API) — graph stack (langgraph, langchain-core) pinned in Story 3.x
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+
+# Dev / test (single-file bootstrap; split later if you add a prod-only constraints file)
+httpx==0.28.1
+pytest==8.3.4
