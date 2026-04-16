@@ -1,5 +1,5 @@
 # generated: 2026-04-12T12:00:00Z
-# last_updated: 2026-04-16T20:30:00Z
+# last_updated: 2026-04-16T15:00:00Z
 # project: Sentinel Prism
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-16T20:30:00Z"
+last_updated: "2026-04-16T20:00:00Z"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -52,9 +52,9 @@ development_status:
 
   epic-2: in-progress
   2-1-source-registry-crud-api-and-persistence: done
-  2-2-scheduled-and-manual-poll-triggers: review
-  2-3-rss-http-connector-implementation-direct-path: backlog
-  2-4-deduplication-and-retry-with-backoff: backlog
+  2-2-scheduled-and-manual-poll-triggers: done
+  2-3-rss-http-connector-implementation-direct-path: done
+  2-4-deduplication-and-retry-with-backoff: done
   2-5-fallback-endpoints-and-enable-disable: backlog
   2-6-per-source-metrics-exposure: backlog
   epic-2-retrospective: optional

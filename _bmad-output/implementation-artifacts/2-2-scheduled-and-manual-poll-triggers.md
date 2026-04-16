@@ -1,6 +1,6 @@
 # Story 2.2: Scheduled and manual poll triggers
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -151,11 +151,12 @@ so that **ingestion runs reliably** (**FR2**).
 
 ## Story completion status
 
-- **review** — Implementation complete; all tasks done; full test suite green (`26 passed`, integration tests skip without DB).
+- **done** — Marked complete after Story 2.3 dev handoff; full test suite green with connector stack (`33 passed`, integration tests skip without DB).
 
 ## Change Log
 
 - 2026-04-16 — Implemented APScheduler `AsyncIOScheduler`, five-field UTC cron validation, `execute_poll` stub with structured logging, `PollScheduler` sync/refresh, `POST /sources/{id}/poll` (202), `DELETE /sources/{id}` for job cleanup, README and `tests/test_poll_triggers.py`.
+- 2026-04-16 — Marked **done** in sprint tracking after Story 2.3 connector implementation landed (poll contract preserved).
 
 ## Dev Agent Record
 

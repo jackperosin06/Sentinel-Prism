@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -102,4 +102,34 @@ class Source(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+
+class SourceIngestedFingerprint(Base):
+    """Lightweight idempotency ledger for connector output (Story 2.4 — FR3)."""
+
+    __tablename__ = "source_ingested_fingerprints"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_id",
+            "fingerprint",
+            name="uq_source_ingested_fingerprint_source_fingerprint",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="CASCADE"),
+        nullable=False,
+        # No separate index: the UNIQUE (source_id, fingerprint) constraint creates
+        # a covering index usable for prefix scans on source_id. A redundant B-tree
+        # index would add write overhead on every INSERT.
+    )
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    item_url: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

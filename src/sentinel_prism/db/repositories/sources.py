@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -76,3 +77,37 @@ async def delete_source(session: AsyncSession, source_id: uuid.UUID) -> bool:
     await session.delete(row)
     await session.flush()
     return True
+
+
+async def record_poll_failure(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    *,
+    reason: str,
+    error_class: str,
+) -> None:
+    """Merge ``last_poll_failure`` into ``Source.extra_metadata`` (Story 2.4 — FR4)."""
+
+    row = await get_source_by_id(session, source_id)
+    if row is None:
+        return
+    meta = dict(row.extra_metadata or {})
+    meta["last_poll_failure"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "reason": reason[:4000],
+        "error_class": error_class[:255],
+    }
+    row.extra_metadata = meta
+    await session.flush()
+
+
+async def clear_poll_failure(session: AsyncSession, source_id: uuid.UUID) -> None:
+    row = await get_source_by_id(session, source_id)
+    if row is None:
+        return
+    meta = dict(row.extra_metadata or {})
+    if "last_poll_failure" not in meta:
+        return
+    del meta["last_poll_failure"]
+    # Explicit check: empty dict → NULL column; non-empty dict preserves other keys.
+    row.extra_metadata = meta if meta else None

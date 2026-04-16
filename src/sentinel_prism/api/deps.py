@@ -16,6 +16,7 @@ from sentinel_prism.db.session import get_db, get_session_factory
 from sentinel_prism.services.auth import decode_access_token, get_user_by_id
 from sentinel_prism.services.auth.providers.factory import get_auth_provider
 from sentinel_prism.services.auth.providers.protocol import AuthProvider
+from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -26,7 +27,7 @@ class PollExecutor(Protocol):
         source_id: uuid.UUID,
         *,
         trigger: Literal["scheduled", "manual"],
-    ) -> None: ...
+    ) -> list[ScoutRawItem]: ...
 
 
 def get_poll_executor() -> PollExecutor:

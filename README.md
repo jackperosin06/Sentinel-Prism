@@ -99,6 +99,10 @@ When **`DATABASE_URL`** is set, the API process runs an **in-process** scheduler
 
 - `POST /sources/{source_id}/poll` — **admin** manual poll (**202** + `{"status":"accepted","source_id":...}`); **404** if missing; **409** if the source is **disabled**.
 
+**Connectors (Story 2.3):** when a poll runs, the API **fetches** the source’s **`primary_url`** — **RSS/Atom** via `feedparser` for `source_type` **`rss`**, or a direct **HTTP GET** (bounded body snippet) for **`http`** — using **`DATABASE_URL`** and outbound network in real environments.
+
+**Dedup & retry (Story 2.4):** each returned item gets a **SHA-256 fingerprint** (normalized URL plus stable title/summary/body/status fields — not `fetched_at`). New fingerprints are stored in **`source_ingested_fingerprints`** so repeat polls only surface **new** items. Transient HTTP failures (**429**, **502–504**, timeouts, connection errors) use **bounded exponential backoff** (stdlib `asyncio.sleep`, no extra dependency); repeated failure stores **`last_poll_failure`** on the source’s **`extra_metadata`**.
+
 Run **`alembic upgrade head`** so the `sources` table exists before using these endpoints.
 
 ## Tests

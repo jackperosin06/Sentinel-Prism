@@ -1,5 +1,18 @@
 # Deferred work tracker
 
+## Deferred from: code review of 2-4-deduplication-and-retry-with-backoff.md (2026-04-16)
+
+- **TOCTOU: `enabled` flag not atomic with dedup commit:** `execute_poll` reads `enabled` in session 1, performs network I/O, then commits dedup in session 3. A source disabled mid-poll still gets fingerprints written. Pre-existing from 2.2/2.3; no incorrect data produced, but `source_id` rows appear in the ledger. [`src/sentinel_prism/services/connectors/poll.py`]
+- **Poll failure stored in JSONB blob with no query index or history:** `record_poll_failure` overwrites `last_poll_failure` each time — no consecutive-failure count, no history. Cannot query all currently-failing sources efficiently. Story 2.6 metrics work will add proper observability. [`src/sentinel_prism/db/repositories/sources.py`]
+- **`Retry-After` header ignored on 429 responses:** Server-specified wait time is not consumed; exponential backoff may fire additional attempts within the header's requested delay. Enhancement; safe for MVP poll volumes. [`src/sentinel_prism/services/connectors/fetch_retry.py`]
+- **Bozo RSS feed continues processing partial feedparser output:** When `bozo=True`, feedparser may return garbled entries. Currently logs a warning and continues; hard-fail option deferred. [`src/sentinel_prism/services/connectors/rss_fetch.py`]
+- **`IntegrityError` on non-fingerprint unique constraint leaves ingestion_dedup session in broken state:** Defensive concern; would only occur if a non-fingerprint constraint is violated on `source_ingested_fingerprints`. Unlikely with current schema. [`src/sentinel_prism/db/repositories/ingestion_dedup.py`]
+
+## Deferred from: code review of 2-3-rss-http-connector-implementation-direct-path.md (2026-04-16)
+
+- **Index-based dedup URN unstable across polls:** Fallback `urn:sentinel-prism:feed-item:{source_id}:{idx}` uses the enumeration index from a single fetch. Feed entry insertions shift all subsequent indexes, producing false dedup misses. Story 2.4 owns deduplication — address stable key strategy there. [`src/sentinel_prism/services/connectors/rss_fetch.py`]
+- **TOCTOU: scheduled poll fires after source disabled:** `PollScheduler._run_scheduled_poll` checks `row.enabled` inside its own session, then `execute_poll` re-checks in a separate session. No incorrect fetch occurs, but there is a narrow window. Pre-existing from Story 2.2 review. [`src/sentinel_prism/workers/poll_scheduler.py`]
+
 ## Deferred from: code review of 2-1 and 2-2 (2026-04-16)
 
 - **TOCTOU race in `_run_scheduled_poll`:** Checks `row.enabled`, closes session, then calls `execute_poll` outside it — gap widens when Story 2.3 adds real network fetch; re-check atomically or pass enabled state into `execute_poll`. [`poll_scheduler.py:92-100`]
