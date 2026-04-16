@@ -1,5 +1,20 @@
 # Deferred work tracker
 
+## Deferred from: code review of 2-1 and 2-2 (2026-04-16)
+
+- **TOCTOU race in `_run_scheduled_poll`:** Checks `row.enabled`, closes session, then calls `execute_poll` outside it — gap widens when Story 2.3 adds real network fetch; re-check atomically or pass enabled state into `execute_poll`. [`poll_scheduler.py:92-100`]
+- **`execute_poll` exceptions not caught from scheduled/manual paths:** Stub is silent but real fetches can raise; add structured error handling and logging in Story 2.3. [`services/connectors/poll.py`]
+- **`shutdown(wait=True)` may block on long-running jobs:** Safe with stub; revisit when 2.3 adds real I/O-bound fetches — consider `wait=False` + job-level timeout. [`workers/poll_scheduler.py:70`]
+- **Multi-process scheduler divergence:** Each Uvicorn worker runs its own in-process APScheduler instance — jobs multiply and refresh calls are not propagated across workers. Acceptable for single-worker MVP; requires a distributed job backend (Celery/ARQ) before horizontal scale. [`workers/poll_scheduler.py`]
+- **URL regex too permissive:** `^https?://\S+` accepts `http://x`; replace with Pydantic `AnyHttpUrl` during a security/hardening pass. [`api/routes/sources.py:33`]
+
+## Deferred from: code review of 2-1-source-registry-crud-api-and-persistence.md (2026-04-16)
+
+- **`schedule` string has no format validation:** Accepted as any non-empty string; Story 2.2 scheduler will need to parse it. Establish a cron or interval string contract at Story 2.2.
+- **Detached `User` from `get_current_user`:** `get_current_user` closes its session and returns a detached ORM object. Safe with scalar columns only; add a note when ORM relationships are added to `User` (Epic 7+).
+- **Two DB sessions per admin request (accepted):** `get_current_user` opens an internal session for JWT→user lookup; `get_db_for_admin` opens a second for the route body. Intentional design — ensures 401 paths never open Postgres. Revisit if pool pressure becomes observable at scale.
+
+
 ## Deferred from: code review of 1-5-auth-provider-interface-stub-for-future-idp.md (2026-04-15)
 
 - **`verify_email_password` name won't fit OIDC:** Method name embeds email/password concepts; a future OIDC provider will need a different method signature or a second interface method. Rename or extend interface at OIDC story.

@@ -83,6 +83,24 @@ UPDATE users SET role = 'admin' WHERE email = 'you@example.com';
 - `GET /rbac-demo/analyst-or-above` — **403** for `viewer`; **200** for `analyst` or `admin`.
 - `GET /rbac-demo/authenticated` — **200** for any authenticated role; **401** without a valid Bearer token.
 
+### Source registry (Story 2.1)
+
+**Admin-only** (`role = admin`). Requires the same Bearer token as other authenticated routes.
+
+- `GET /sources` — list sources (ordered by `created_at`, oldest first).
+- `POST /sources` — create a source (`name`, `jurisdiction`, `source_type` `rss` \| `http`, `primary_url`, `schedule`, optional `enabled`, `extra_metadata`).
+- `GET /sources/{source_id}` — fetch one source.
+- `PATCH /sources/{source_id}` — partial update.
+- `DELETE /sources/{source_id}` — remove a source (Story 2.2 — also drops its scheduled poll job).
+
+### Poll scheduler (Story 2.2)
+
+When **`DATABASE_URL`** is set, the API process runs an **in-process** scheduler (**APScheduler**) that registers one **UTC five-field cron** job per **enabled** source (`schedule` on create/update must be valid cron, e.g. `0 * * * *`).
+
+- `POST /sources/{source_id}/poll` — **admin** manual poll (**202** + `{"status":"accepted","source_id":...}`); **404** if missing; **409** if the source is **disabled**.
+
+Run **`alembic upgrade head`** so the `sources` table exists before using these endpoints.
+
 ## Tests
 
 ```bash

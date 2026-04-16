@@ -1,5 +1,5 @@
 # generated: 2026-04-12T12:00:00Z
-# last_updated: 2026-04-15T13:00:00Z
+# last_updated: 2026-04-16T20:30:00Z
 # project: Sentinel Prism
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-15T13:00:00Z"
+last_updated: "2026-04-16T20:30:00Z"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -50,9 +50,9 @@ development_status:
   1-5-auth-provider-interface-stub-for-future-idp: done
   epic-1-retrospective: optional
 
-  epic-2: backlog
-  2-1-source-registry-crud-api-and-persistence: backlog
-  2-2-scheduled-and-manual-poll-triggers: backlog
+  epic-2: in-progress
+  2-1-source-registry-crud-api-and-persistence: done
+  2-2-scheduled-and-manual-poll-triggers: review
   2-3-rss-http-connector-implementation-direct-path: backlog
   2-4-deduplication-and-retry-with-backoff: backlog
   2-5-fallback-endpoints-and-enable-disable: backlog

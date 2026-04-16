@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import Literal, Protocol
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -11,12 +12,27 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel_prism.db.models import User, UserRole
-from sentinel_prism.db.session import get_db
+from sentinel_prism.db.session import get_db, get_session_factory
 from sentinel_prism.services.auth import decode_access_token, get_user_by_id
 from sentinel_prism.services.auth.providers.factory import get_auth_provider
 from sentinel_prism.services.auth.providers.protocol import AuthProvider
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+class PollExecutor(Protocol):
+    async def __call__(
+        self,
+        source_id: uuid.UUID,
+        *,
+        trigger: Literal["scheduled", "manual"],
+    ) -> None: ...
+
+
+def get_poll_executor() -> PollExecutor:
+    from sentinel_prism.services.connectors.poll import execute_poll
+
+    return execute_poll
 
 
 def get_login_auth_provider() -> AuthProvider:
@@ -47,8 +63,9 @@ def require_roles(
 
 async def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: AsyncSession = Depends(get_db),
 ) -> User:
+    """Resolve JWT to a ``User`` row. Opens a DB session only after the token parses."""
+
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
@@ -67,18 +84,35 @@ async def get_current_user(
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    user = await get_user_by_id(db, user_id)
-    if user is None or not user.is_active:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    try:
-        UserRole(user.role)
-    except ValueError:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            detail="Account has an invalid role; contact an administrator",
-        )
-    return user
+
+    factory = get_session_factory()
+    async with factory() as db:
+        user = await get_user_by_id(db, user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="Not authenticated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        try:
+            UserRole(user.role)
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                detail="Account has an invalid role; contact an administrator",
+            )
+        return user
+
+
+async def get_db_for_admin(
+    _user: User = Depends(require_roles(UserRole.ADMIN)),
+) -> AsyncSession:  # type: ignore[return]
+    """DB session for routes that require **admin** — RBAC runs before this session opens.
+
+    Declared as ``-> AsyncSession`` so ``Annotated[AsyncSession, Depends(...)]`` is
+    type-correct from the caller's perspective. FastAPI detects the ``yield`` and manages
+    the generator lifecycle correctly at runtime.
+    """
+
+    async for session in get_db():
+        yield session
