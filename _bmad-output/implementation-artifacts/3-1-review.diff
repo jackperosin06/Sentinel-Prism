@@ -1,0 +1,770 @@
+diff --git a/src/sentinel_prism/db/models.py b/src/sentinel_prism/db/models.py
+index 2f2c2e5..3d9b8ed 100644
+--- a/src/sentinel_prism/db/models.py
++++ b/src/sentinel_prism/db/models.py
+@@ -11,7 +11,9 @@ from sqlalchemy import (
+     Boolean,
+     DateTime,
+     Enum,
++    Float,
+     ForeignKey,
++    Index,
+     Integer,
+     String,
+     Text,
+@@ -181,3 +183,82 @@ class SourceIngestedFingerprint(Base):
+     first_seen_at: Mapped[datetime] = mapped_column(
+         DateTime(timezone=True), server_default=func.now(), nullable=False
+     )
++
++
++class RawCapture(Base):
++    """Durable scout output before normalization (Story 3.1 — FR7).
++
++    ``payload`` JSONB holds a serialized ``ScoutRawItem``-compatible dict (reconstructible).
++    ``sources`` row deletion is RESTRICTed so audit captures are not silently removed.
++    Optional ``run_id`` reserved for LangGraph correlation (Story 3.2+); unused until then.
++    """
++
++    __tablename__ = "raw_captures"
++    __table_args__ = (Index("ix_raw_captures_source_captured", "source_id", "captured_at"),)
++
++    id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
++    )
++    source_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True),
++        ForeignKey("sources.id", ondelete="RESTRICT"),
++        nullable=False,
++    )
++    captured_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), nullable=False
++    )
++    item_url: Mapped[str] = mapped_column(Text(), nullable=False)
++    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
++    run_id: Mapped[uuid.UUID | None] = mapped_column(
++        UUID(as_uuid=True), nullable=True, index=True
++    )
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False
++    )
++
++
++class NormalizedUpdateRow(Base):
++    """Normalized regulatory update derived from a raw capture (Story 3.1 — FR8, FR10).
++
++    ``raw_capture_id`` uses ON DELETE RESTRICT so normalized rows anchor an auditable chain.
++    ``parser_confidence`` / ``extraction_quality`` are 0..1 when set (MVP heuristic may mirror both).
++    """
++
++    __tablename__ = "normalized_updates"
++    __table_args__ = (
++        Index("ix_normalized_updates_source_created", "source_id", "created_at"),
++    )
++
++    id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
++    )
++    raw_capture_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True),
++        ForeignKey("raw_captures.id", ondelete="RESTRICT"),
++        nullable=False,
++        index=True,
++    )
++    source_id: Mapped[uuid.UUID] = mapped_column(
++        UUID(as_uuid=True),
++        ForeignKey("sources.id", ondelete="RESTRICT"),
++        nullable=False,
++    )
++    source_name: Mapped[str] = mapped_column(String(512), nullable=False)
++    jurisdiction: Mapped[str] = mapped_column(String(256), nullable=False)
++    title: Mapped[str | None] = mapped_column(Text(), nullable=True)
++    published_at: Mapped[datetime | None] = mapped_column(
++        DateTime(timezone=True), nullable=True
++    )
++    item_url: Mapped[str] = mapped_column(Text(), nullable=False)
++    document_type: Mapped[str] = mapped_column(String(64), nullable=False)
++    body_text: Mapped[str | None] = mapped_column(Text(), nullable=True)
++    summary: Mapped[str | None] = mapped_column(Text(), nullable=True)
++    extra_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
++    parser_confidence: Mapped[float | None] = mapped_column(Float(), nullable=True)
++    extraction_quality: Mapped[float | None] = mapped_column(Float(), nullable=True)
++    run_id: Mapped[uuid.UUID | None] = mapped_column(
++        UUID(as_uuid=True), nullable=True, index=True
++    )
++    created_at: Mapped[datetime] = mapped_column(
++        DateTime(timezone=True), server_default=func.now(), nullable=False
++    )
+diff --git a/src/sentinel_prism/services/connectors/poll.py b/src/sentinel_prism/services/connectors/poll.py
+index 816761d..6038c8e 100644
+--- a/src/sentinel_prism/services/connectors/poll.py
++++ b/src/sentinel_prism/services/connectors/poll.py
+@@ -14,6 +14,7 @@ from sentinel_prism.db.models import FallbackMode, SourceType
+ from sentinel_prism.db.repositories import ingestion_dedup
+ from sentinel_prism.db.repositories import sources as sources_repo
+ from sentinel_prism.db.session import get_session_factory
++from sentinel_prism.services.ingestion.persist import persist_new_items_after_dedup
+ from sentinel_prism.services.connectors.errors import ConnectorFetchFailed
+ from sentinel_prism.services.connectors.html_fallback import fetch_html_page_items
+ from sentinel_prism.services.connectors.http_fetch import fetch_http_page_item
+@@ -312,6 +313,18 @@ async def execute_poll(
+             new_items = await ingestion_dedup.register_new_items(
+                 session, source_id, items
+             )
++            source_snapshot = await sources_repo.get_source_by_id(session, source_id)
++            if source_snapshot is None:
++                raise RuntimeError(
++                    "internal invariant: source row missing after successful fetch"
++                )
++            await persist_new_items_after_dedup(
++                session,
++                source_id=source_id,
++                source_name=source_snapshot.name,
++                jurisdiction=source_snapshot.jurisdiction,
++                new_items=new_items,
++            )
+             # Explicit invariant check — ``assert`` would vanish under ``python -O``
+             # and then pass ``fetch_path=None`` into ``record_poll_success_metrics``
+             # (Story 2.6 review P6).
+diff --git a/tests/test_alembic_cli.py b/tests/test_alembic_cli.py
+index 4228fe7..5a9f654 100644
+--- a/tests/test_alembic_cli.py
++++ b/tests/test_alembic_cli.py
+@@ -23,7 +23,7 @@ def test_alembic_heads_shows_latest_revision() -> None:
+         check=False,
+     )
+     assert r.returncode == 0, r.stderr
+-    assert "a7f6e5d4c3b2" in r.stdout
++    assert "d8e9f0a1b2c3" in r.stdout
+ 
+ 
+ def test_alembic_upgrade_head_requires_sync_url() -> None:
+diff --git a/tests/test_connectors_rss_http.py b/tests/test_connectors_rss_http.py
+index f86ef8b..2bda5cb 100644
+--- a/tests/test_connectors_rss_http.py
++++ b/tests/test_connectors_rss_http.py
+@@ -277,6 +277,8 @@ def _poll_source_row(**overrides: object) -> MagicMock:
+ 
+     row = MagicMock()
+     row.enabled = True
++    row.name = "poll-test-source"
++    row.jurisdiction = "EU"
+     row.source_type = SourceType.RSS
+     row.primary_url = "https://ex/feed.xml"
+     row.fallback_url = None
+
+=== NEW FILE: alembic/versions/d8e9f0a1b2c3_add_raw_captures_and_normalized_updates.py ===
+diff --git a/alembic/versions/d8e9f0a1b2c3_add_raw_captures_and_normalized_updates.py b/alembic/versions/d8e9f0a1b2c3_add_raw_captures_and_normalized_updates.py
+new file mode 100644
+index 0000000..c2cfc1a
+--- /dev/null
++++ b/alembic/versions/d8e9f0a1b2c3_add_raw_captures_and_normalized_updates.py
+@@ -0,0 +1,125 @@
++"""Add raw_captures and normalized_updates (Story 3.1 — FR7–FR10).
++
++Revision ID: d8e9f0a1b2c3
++Revises: a7f6e5d4c3b2
++Create Date: 2026-04-17
++
++FK notes:
++- raw_captures.source_id → sources.id ON DELETE RESTRICT (preserve audit if source removed).
++- normalized_updates.raw_capture_id → raw_captures.id ON DELETE RESTRICT.
++- normalized_updates.source_id → sources.id ON DELETE RESTRICT.
++"""
++
++from typing import Sequence, Union
++
++import sqlalchemy as sa
++from alembic import op
++from sqlalchemy.dialects import postgresql
++
++revision: str = "d8e9f0a1b2c3"
++down_revision: Union[str, Sequence[str], None] = "a7f6e5d4c3b2"
++branch_labels: Union[str, Sequence[str], None] = None
++depends_on: Union[str, Sequence[str], None] = None
++
++
++def upgrade() -> None:
++    op.create_table(
++        "raw_captures",
++        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
++        sa.Column("source_id", postgresql.UUID(as_uuid=True), nullable=False),
++        sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False),
++        sa.Column("item_url", sa.Text(), nullable=False),
++        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
++        sa.Column("run_id", postgresql.UUID(as_uuid=True), nullable=True),
++        sa.Column(
++            "created_at",
++            sa.DateTime(timezone=True),
++            server_default=sa.text("now()"),
++            nullable=False,
++        ),
++        sa.ForeignKeyConstraint(
++            ["source_id"],
++            ["sources.id"],
++            name=op.f("fk_raw_captures_source_id_sources"),
++            ondelete="RESTRICT",
++        ),
++        sa.PrimaryKeyConstraint("id", name=op.f("pk_raw_captures")),
++    )
++    op.create_index(
++        "ix_raw_captures_run_id",
++        "raw_captures",
++        ["run_id"],
++        unique=False,
++    )
++    op.create_index(
++        "ix_raw_captures_source_captured",
++        "raw_captures",
++        ["source_id", "captured_at"],
++        unique=False,
++    )
++
++    op.create_table(
++        "normalized_updates",
++        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
++        sa.Column("raw_capture_id", postgresql.UUID(as_uuid=True), nullable=False),
++        sa.Column("source_id", postgresql.UUID(as_uuid=True), nullable=False),
++        sa.Column("source_name", sa.String(length=512), nullable=False),
++        sa.Column("jurisdiction", sa.String(length=256), nullable=False),
++        sa.Column("title", sa.Text(), nullable=True),
++        sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
++        sa.Column("item_url", sa.Text(), nullable=False),
++        sa.Column("document_type", sa.String(length=64), nullable=False),
++        sa.Column("body_text", sa.Text(), nullable=True),
++        sa.Column("summary", sa.Text(), nullable=True),
++        sa.Column("extra_metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
++        sa.Column("parser_confidence", sa.Float(), nullable=True),
++        sa.Column("extraction_quality", sa.Float(), nullable=True),
++        sa.Column("run_id", postgresql.UUID(as_uuid=True), nullable=True),
++        sa.Column(
++            "created_at",
++            sa.DateTime(timezone=True),
++            server_default=sa.text("now()"),
++            nullable=False,
++        ),
++        sa.ForeignKeyConstraint(
++            ["raw_capture_id"],
++            ["raw_captures.id"],
++            name=op.f("fk_normalized_updates_raw_capture_id_raw_captures"),
++            ondelete="RESTRICT",
++        ),
++        sa.ForeignKeyConstraint(
++            ["source_id"],
++            ["sources.id"],
++            name=op.f("fk_normalized_updates_source_id_sources"),
++            ondelete="RESTRICT",
++        ),
++        sa.PrimaryKeyConstraint("id", name=op.f("pk_normalized_updates")),
++    )
++    op.create_index(
++        "ix_normalized_updates_raw_capture_id",
++        "normalized_updates",
++        ["raw_capture_id"],
++        unique=False,
++    )
++    op.create_index(
++        "ix_normalized_updates_run_id",
++        "normalized_updates",
++        ["run_id"],
++        unique=False,
++    )
++    op.create_index(
++        "ix_normalized_updates_source_created",
++        "normalized_updates",
++        ["source_id", "created_at"],
++        unique=False,
++    )
++
++
++def downgrade() -> None:
++    op.drop_index("ix_normalized_updates_source_created", table_name="normalized_updates")
++    op.drop_index("ix_normalized_updates_run_id", table_name="normalized_updates")
++    op.drop_index("ix_normalized_updates_raw_capture_id", table_name="normalized_updates")
++    op.drop_table("normalized_updates")
++    op.drop_index("ix_raw_captures_source_captured", table_name="raw_captures")
++    op.drop_index("ix_raw_captures_run_id", table_name="raw_captures")
++    op.drop_table("raw_captures")
+
+=== NEW FILE: src/sentinel_prism/db/repositories/captures.py ===
+diff --git a/src/sentinel_prism/db/repositories/captures.py b/src/sentinel_prism/db/repositories/captures.py
+new file mode 100644
+index 0000000..a6cb4d4
+--- /dev/null
++++ b/src/sentinel_prism/db/repositories/captures.py
+@@ -0,0 +1,73 @@
++"""Raw capture and normalized update persistence (Story 3.1)."""
++
++from __future__ import annotations
++
++import uuid
++from typing import Any
++
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from sentinel_prism.db.models import NormalizedUpdateRow, RawCapture
++from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
++from sentinel_prism.services.ingestion.normalize import NormalizedUpdate
++
++
++def scout_raw_item_payload(item: ScoutRawItem) -> dict[str, Any]:
++    """JSON-serializable dict reconstructible to scout fields (FR7)."""
++
++    return {
++        "source_id": str(item.source_id),
++        "item_url": item.item_url,
++        "fetched_at": item.fetched_at.isoformat(),
++        "title": item.title,
++        "published_at": item.published_at.isoformat() if item.published_at else None,
++        "summary": item.summary,
++        "http_status": item.http_status,
++        "content_type": item.content_type,
++        "body_snippet": item.body_snippet,
++    }
++
++
++async def insert_raw_capture(
++    session: AsyncSession,
++    *,
++    source_id: uuid.UUID,
++    item: ScoutRawItem,
++) -> uuid.UUID:
++    row = RawCapture(
++        source_id=source_id,
++        captured_at=item.fetched_at,
++        item_url=item.item_url,
++        payload=scout_raw_item_payload(item),
++        run_id=None,
++    )
++    session.add(row)
++    await session.flush()
++    return row.id
++
++
++async def insert_normalized_update(
++    session: AsyncSession,
++    *,
++    raw_capture_id: uuid.UUID,
++    normalized: NormalizedUpdate,
++) -> uuid.UUID:
++    row = NormalizedUpdateRow(
++        raw_capture_id=raw_capture_id,
++        source_id=normalized.source_id,
++        source_name=normalized.source_name,
++        jurisdiction=normalized.jurisdiction,
++        title=normalized.title,
++        published_at=normalized.published_at,
++        item_url=normalized.item_url,
++        document_type=normalized.document_type,
++        body_text=normalized.body_text,
++        summary=normalized.summary,
++        extra_metadata=normalized.extra_metadata,
++        parser_confidence=normalized.parser_confidence,
++        extraction_quality=normalized.extraction_quality,
++        run_id=None,
++    )
++    session.add(row)
++    await session.flush()
++    return row.id
+
+=== NEW FILE: src/sentinel_prism/services/ingestion/__init__.py ===
+diff --git a/src/sentinel_prism/services/ingestion/__init__.py b/src/sentinel_prism/services/ingestion/__init__.py
+new file mode 100644
+index 0000000..1ca6902
+--- /dev/null
++++ b/src/sentinel_prism/services/ingestion/__init__.py
+@@ -0,0 +1,10 @@
++"""Ingestion persistence and normalization (Epic 3)."""
++
++from sentinel_prism.services.ingestion.normalize import NormalizedUpdate, normalize_scout_item
++from sentinel_prism.services.ingestion.persist import persist_new_items_after_dedup
++
++__all__ = [
++    "NormalizedUpdate",
++    "normalize_scout_item",
++    "persist_new_items_after_dedup",
++]
+
+=== NEW FILE: src/sentinel_prism/services/ingestion/normalize.py ===
+diff --git a/src/sentinel_prism/services/ingestion/normalize.py b/src/sentinel_prism/services/ingestion/normalize.py
+new file mode 100644
+index 0000000..bcd7af9
+--- /dev/null
++++ b/src/sentinel_prism/services/ingestion/normalize.py
+@@ -0,0 +1,83 @@
++"""Map ``ScoutRawItem`` → normalized update fields (Story 3.1 — FR8, FR10)."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from datetime import datetime
++from typing import Any
++from uuid import UUID
++
++from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
++
++DOCUMENT_TYPE_UNKNOWN = "unknown"
++
++
++def _mvp_confidence_scores(item: ScoutRawItem) -> tuple[float, float]:
++    """Heuristic 0..1 parser confidence and extraction quality (MVP).
++
++    Weights are explicit (not magic): base credit for a durable URL capture, then
++    additive evidence for title, publication time, and text snippets. For MVP both
++    metrics mirror the same score; future pipeline steps may diverge them.
++    """
++    score = 0.35
++    if item.title and item.title.strip():
++        score += 0.28
++    if item.published_at is not None:
++        score += 0.18
++    if (item.summary and item.summary.strip()) or (
++        item.body_snippet and item.body_snippet.strip()
++    ):
++        score += 0.14
++    capped = min(1.0, round(score, 4))
++    return capped, capped
++
++
++@dataclass(frozen=True)
++class NormalizedUpdate:
++    """Canonical normalized update before ORM persistence (internal domain shape)."""
++
++    source_id: UUID
++    source_name: str
++    jurisdiction: str
++    item_url: str
++    title: str | None
++    published_at: datetime | None
++    document_type: str
++    body_text: str | None
++    summary: str | None
++    extra_metadata: dict[str, Any] | None
++    parser_confidence: float | None
++    extraction_quality: float | None
++
++
++def normalize_scout_item(
++    item: ScoutRawItem,
++    *,
++    source_id: UUID,
++    source_name: str,
++    jurisdiction: str,
++) -> NormalizedUpdate:
++    """Fill PRD FR8 fields from RSS/HTTP-shaped scout data; FR10 via :func:`_mvp_confidence_scores`."""
++
++    meta: dict[str, Any] = {}
++    if item.http_status is not None:
++        meta["http_status"] = item.http_status
++    if item.content_type:
++        meta["content_type"] = item.content_type
++
++    pc, eq = _mvp_confidence_scores(item)
++
++    return NormalizedUpdate(
++        source_id=source_id,
++        source_name=source_name,
++        jurisdiction=jurisdiction,
++        item_url=item.item_url,
++        title=item.title,
++        published_at=item.published_at,
++        document_type=DOCUMENT_TYPE_UNKNOWN,
++        body_text=item.body_snippet,
++        summary=item.summary,
++        extra_metadata=meta or None,
++        parser_confidence=pc,
++        extraction_quality=eq,
++    )
+
+=== NEW FILE: src/sentinel_prism/services/ingestion/persist.py ===
+diff --git a/src/sentinel_prism/services/ingestion/persist.py b/src/sentinel_prism/services/ingestion/persist.py
+new file mode 100644
+index 0000000..33b6e00
+--- /dev/null
++++ b/src/sentinel_prism/services/ingestion/persist.py
+@@ -0,0 +1,50 @@
++"""Orchestrate raw + normalized persistence after dedup (Story 3.1)."""
++
++from __future__ import annotations
++
++import logging
++import uuid
++
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from sentinel_prism.db.repositories import captures as captures_repo
++from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
++from sentinel_prism.services.ingestion.normalize import normalize_scout_item
++
++logger = logging.getLogger(__name__)
++
++
++async def persist_new_items_after_dedup(
++    session: AsyncSession,
++    *,
++    source_id: uuid.UUID,
++    source_name: str,
++    jurisdiction: str,
++    new_items: list[ScoutRawItem],
++) -> None:
++    """Insert raw capture + normalized row per deduped item (same transaction as caller)."""
++
++    for item in new_items:
++        raw_id = await captures_repo.insert_raw_capture(
++            session, source_id=source_id, item=item
++        )
++        normalized = normalize_scout_item(
++            item,
++            source_id=source_id,
++            source_name=source_name,
++            jurisdiction=jurisdiction,
++        )
++        norm_id = await captures_repo.insert_normalized_update(
++            session,
++            raw_capture_id=raw_id,
++            normalized=normalized,
++        )
++        logger.info(
++            "raw_capture_persisted",
++            extra={
++                "source_id": str(source_id),
++                "raw_capture_id": str(raw_id),
++                "normalized_update_id": str(norm_id),
++                "item_url": item.item_url,
++            },
++        )
+
+=== NEW FILE: tests/test_captures_persist.py ===
+diff --git a/tests/test_captures_persist.py b/tests/test_captures_persist.py
+new file mode 100644
+index 0000000..cf4445c
+--- /dev/null
++++ b/tests/test_captures_persist.py
+@@ -0,0 +1,127 @@
++"""Raw + normalized persistence (Story 3.1) — optional DB integration."""
++
++from __future__ import annotations
++
++import os
++import subprocess
++import sys
++import uuid
++from datetime import datetime, timezone
++from pathlib import Path
++
++import pytest
++from sqlalchemy import func, select
++from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
++
++from sentinel_prism.db.models import NormalizedUpdateRow, RawCapture, Source, SourceType
++from sentinel_prism.db.repositories import ingestion_dedup
++from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
++from sentinel_prism.services.ingestion.persist import persist_new_items_after_dedup
++
++ROOT = Path(__file__).resolve().parents[1]
++
++
++@pytest.mark.integration
++async def test_persist_after_dedup_links_raw_to_normalized() -> None:
++    db_url = os.environ.get("DATABASE_URL", "").strip()
++    sync_url = os.environ.get("ALEMBIC_SYNC_URL", "").strip()
++    if not db_url or not sync_url:
++        pytest.skip("DATABASE_URL and ALEMBIC_SYNC_URL required for integration")
++
++    env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "ALEMBIC_SYNC_URL": sync_url}
++    mig = subprocess.run(
++        [
++            sys.executable,
++            "-m",
++            "alembic",
++            "-c",
++            str(ROOT / "alembic.ini"),
++            "upgrade",
++            "head",
++        ],
++        cwd=str(ROOT),
++        env=env,
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    assert mig.returncode == 0, mig.stderr
++
++    engine = create_async_engine(db_url)
++    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
++    suffix = uuid.uuid4().hex[:8]
++
++    async with factory() as session:
++        src = Source(
++            name=f"captures-test-{suffix}",
++            jurisdiction="CH",
++            source_type=SourceType.RSS,
++            primary_url="https://example.com/feed",
++            schedule="0 * * * *",
++            enabled=True,
++        )
++        session.add(src)
++        await session.commit()
++        sid = src.id
++
++        fetched = datetime.now(timezone.utc)
++        item = ScoutRawItem(
++            source_id=sid,
++            item_url="https://reg.example/persist-1",
++            fetched_at=fetched,
++            title="Persisted",
++            published_at=fetched,
++            summary="S",
++            body_snippet="B",
++            http_status=200,
++            content_type="text/xml",
++        )
++        new_items = await ingestion_dedup.register_new_items(session, sid, [item])
++        assert len(new_items) == 1
++
++        await persist_new_items_after_dedup(
++            session,
++            source_id=sid,
++            source_name=src.name,
++            jurisdiction=src.jurisdiction,
++            new_items=new_items,
++        )
++        await session.commit()
++
++        n_raw = (
++            await session.execute(
++                select(func.count()).select_from(RawCapture).where(
++                    RawCapture.source_id == sid
++                )
++            )
++        ).scalar_one()
++        n_norm = (
++            await session.execute(
++                select(func.count())
++                .select_from(NormalizedUpdateRow)
++                .where(NormalizedUpdateRow.source_id == sid)
++            )
++        ).scalar_one()
++        assert n_raw == 1
++        assert n_norm == 1
++
++        row_norm = (
++            await session.execute(
++                select(NormalizedUpdateRow).where(
++                    NormalizedUpdateRow.item_url == item.item_url
++                )
++            )
++        ).scalar_one()
++        assert row_norm.source_id == sid
++        assert row_norm.source_name == src.name
++        assert row_norm.jurisdiction == "CH"
++        assert row_norm.title == "Persisted"
++        assert row_norm.raw_capture_id is not None
++        raw = await session.get(RawCapture, row_norm.raw_capture_id)
++        assert raw is not None
++        assert raw.source_id == sid
++        assert raw.item_url == item.item_url
++        assert raw.payload["title"] == "Persisted"
++        assert row_norm.parser_confidence is not None
++
++    await engine.dispose()
+
+=== NEW FILE: tests/test_ingestion_normalize.py ===
+diff --git a/tests/test_ingestion_normalize.py b/tests/test_ingestion_normalize.py
+new file mode 100644
+index 0000000..87dc7fc
+--- /dev/null
++++ b/tests/test_ingestion_normalize.py
+@@ -0,0 +1,91 @@
++"""Normalization heuristic (Story 3.1) — unit tests only."""
++
++from __future__ import annotations
++
++import uuid
++from datetime import datetime, timezone
++
++from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
++from sentinel_prism.services.ingestion.normalize import (
++    DOCUMENT_TYPE_UNKNOWN,
++    normalize_scout_item,
++)
++
++
++def test_normalize_full_rss_shaped_item() -> None:
++    sid = uuid.uuid4()
++    pub = datetime(2024, 1, 15, 12, 0, tzinfo=timezone.utc)
++    fetched = datetime(2024, 1, 16, 8, 0, tzinfo=timezone.utc)
++    item = ScoutRawItem(
++        source_id=sid,
++        item_url="https://reg.example/doc",
++        fetched_at=fetched,
++        title="Label change",
++        published_at=pub,
++        summary="Short",
++        http_status=200,
++        content_type="application/rss+xml",
++        body_snippet="Body",
++    )
++    n = normalize_scout_item(
++        item,
++        source_id=sid,
++        source_name="FDA Feed",
++        jurisdiction="US",
++    )
++    assert n.source_id == sid
++    assert n.source_name == "FDA Feed"
++    assert n.jurisdiction == "US"
++    assert n.item_url == item.item_url
++    assert n.title == "Label change"
++    assert n.published_at == pub
++    assert n.document_type == DOCUMENT_TYPE_UNKNOWN
++    assert n.body_text == "Body"
++    assert n.summary == "Short"
++    assert n.extra_metadata == {"http_status": 200, "content_type": "application/rss+xml"}
++    assert n.parser_confidence == n.extraction_quality == 0.95
++
++
++def test_normalize_missing_title_and_dates_lowers_confidence() -> None:
++    sid = uuid.uuid4()
++    fetched = datetime(2024, 2, 1, tzinfo=timezone.utc)
++    item = ScoutRawItem(
++        source_id=sid,
++        item_url="https://reg.example/only-url",
++        fetched_at=fetched,
++        title=None,
++        published_at=None,
++        summary=None,
++        body_snippet=None,
++    )
++    n = normalize_scout_item(
++        item,
++        source_id=sid,
++        source_name="S",
++        jurisdiction="EU",
++    )
++    assert n.title is None
++    assert n.published_at is None
++    assert n.extra_metadata is None
++    assert n.parser_confidence == 0.35
++
++
++def test_normalize_http_snippet_without_title() -> None:
++    sid = uuid.uuid4()
++    fetched = datetime(2024, 3, 1, tzinfo=timezone.utc)
++    item = ScoutRawItem(
++        source_id=sid,
++        item_url="https://reg.example/page",
++        fetched_at=fetched,
++        title=None,
++        body_snippet="HTML excerpt",
++        http_status=200,
++    )
++    n = normalize_scout_item(
++        item,
++        source_id=sid,
++        source_name="HTTP",
++        jurisdiction="UK",
++    )
++    assert n.body_text == "HTML excerpt"
++    assert n.parser_confidence == 0.49
+\ No newline at end of file

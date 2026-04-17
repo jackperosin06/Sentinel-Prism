@@ -277,6 +277,8 @@ def _poll_source_row(**overrides: object) -> MagicMock:
 
     row = MagicMock()
     row.enabled = True
+    row.name = "poll-test-source"
+    row.jurisdiction = "EU"
     row.source_type = SourceType.RSS
     row.primary_url = "https://ex/feed.xml"
     row.fallback_url = None
@@ -371,7 +373,7 @@ async def test_execute_poll_rss_calls_fetcher(
         return expected
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch,
     )
 
@@ -383,6 +385,16 @@ async def test_execute_poll_rss_calls_fetcher(
     monkeypatch.setattr(
         "sentinel_prism.services.connectors.poll.ingestion_dedup.register_new_items",
         _dedupe,
+    )
+
+    async def _persist_noop(*_args: object, **_kwargs: object) -> None:
+        """Stub out persistence — these tests exercise poll control flow, not
+        the DB path (the real persist path is covered by ``test_captures_persist``)."""
+        return None
+
+    monkeypatch.setattr(
+        "sentinel_prism.services.connectors.poll.persist_new_items_after_dedup",
+        _persist_noop,
     )
     out = await execute_poll(sid, trigger="manual")
     assert out == expected
@@ -419,7 +431,7 @@ async def test_execute_poll_records_failure_after_connector_error(
         raise error
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fail_fetch,
     )
 
@@ -488,7 +500,7 @@ async def test_execute_poll_http_calls_fetcher(
         return expected
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_http_page_item",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_http_page_item",
         _fetch,
     )
 
@@ -500,6 +512,16 @@ async def test_execute_poll_http_calls_fetcher(
     monkeypatch.setattr(
         "sentinel_prism.services.connectors.poll.ingestion_dedup.register_new_items",
         _dedupe,
+    )
+
+    async def _persist_noop(*_args: object, **_kwargs: object) -> None:
+        """Stub out persistence — these tests exercise poll control flow, not
+        the DB path (the real persist path is covered by ``test_captures_persist``)."""
+        return None
+
+    monkeypatch.setattr(
+        "sentinel_prism.services.connectors.poll.persist_new_items_after_dedup",
+        _persist_noop,
     )
     out = await execute_poll(sid, trigger="scheduled")
     assert out == expected
@@ -575,7 +597,7 @@ async def test_execute_poll_primary_failure_triggers_fallback_same_as_primary(
         ]
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch_rss,
     )
 
@@ -587,6 +609,16 @@ async def test_execute_poll_primary_failure_triggers_fallback_same_as_primary(
     monkeypatch.setattr(
         "sentinel_prism.services.connectors.poll.ingestion_dedup.register_new_items",
         _dedupe,
+    )
+
+    async def _persist_noop(*_args: object, **_kwargs: object) -> None:
+        """Stub out persistence — these tests exercise poll control flow, not
+        the DB path (the real persist path is covered by ``test_captures_persist``)."""
+        return None
+
+    monkeypatch.setattr(
+        "sentinel_prism.services.connectors.poll.persist_new_items_after_dedup",
+        _persist_noop,
     )
 
     out = await execute_poll(sid, trigger="manual")
@@ -636,7 +668,7 @@ async def test_execute_poll_primary_ok_does_not_call_fallback(
         ]
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch_rss,
     )
 
@@ -648,6 +680,16 @@ async def test_execute_poll_primary_ok_does_not_call_fallback(
     monkeypatch.setattr(
         "sentinel_prism.services.connectors.poll.ingestion_dedup.register_new_items",
         _dedupe,
+    )
+
+    async def _persist_noop(*_args: object, **_kwargs: object) -> None:
+        """Stub out persistence — these tests exercise poll control flow, not
+        the DB path (the real persist path is covered by ``test_captures_persist``)."""
+        return None
+
+    monkeypatch.setattr(
+        "sentinel_prism.services.connectors.poll.persist_new_items_after_dedup",
+        _persist_noop,
     )
 
     await execute_poll(sid, trigger="manual")
@@ -687,7 +729,7 @@ async def test_execute_poll_both_primary_and_fallback_fail(
         raise ConnectorFetchFailed("fallback fail", error_class="HTTPStatusError")
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch_rss,
     )
 
@@ -762,7 +804,7 @@ async def test_execute_poll_html_fallback_success(
         raise ConnectorFetchFailed("primary down", error_class="HTTPStatusError")
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch_rss,
     )
 
@@ -780,7 +822,7 @@ async def test_execute_poll_html_fallback_success(
         ]
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_html_page_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_html_page_items",
         _fetch_html,
     )
 
@@ -792,6 +834,16 @@ async def test_execute_poll_html_fallback_success(
     monkeypatch.setattr(
         "sentinel_prism.services.connectors.poll.ingestion_dedup.register_new_items",
         _dedupe,
+    )
+
+    async def _persist_noop(*_args: object, **_kwargs: object) -> None:
+        """Stub out persistence — these tests exercise poll control flow, not
+        the DB path (the real persist path is covered by ``test_captures_persist``)."""
+        return None
+
+    monkeypatch.setattr(
+        "sentinel_prism.services.connectors.poll.persist_new_items_after_dedup",
+        _persist_noop,
     )
 
     out = await execute_poll(sid, trigger="manual")
@@ -834,7 +886,7 @@ async def test_execute_poll_html_fallback_4xx_logs_both_failed(
         raise ConnectorFetchFailed("primary 500", error_class="HTTPStatusError")
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch_rss,
     )
 
@@ -853,7 +905,7 @@ async def test_execute_poll_html_fallback_4xx_logs_both_failed(
         )
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_html_page_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_html_page_items",
         _fetch_html,
     )
 
@@ -919,18 +971,18 @@ async def test_execute_poll_primary_non_connector_exception_does_not_trigger_fal
         raise ValueError("unexpected primary bug")
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch_rss,
     )
 
     # Fallback must NOT be called — use the same spec's same_as_primary path but set a
     # sentinel that blows up if touched.
-    def _must_not_be_called(*_a: object, **_k: object) -> None:
+    async def _must_not_be_called_async(*_a: object, **_k: object) -> list[ScoutRawItem]:
         raise AssertionError("fallback must not be attempted on non-ConnectorFetchFailed")
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll._fetch_fallback",
-        _must_not_be_called,
+        "sentinel_prism.services.connectors.scout_fetch.fetch_fallback_items",
+        _must_not_be_called_async,
     )
 
     recorded: list[dict[str, object]] = []
@@ -1244,7 +1296,7 @@ async def test_execute_poll_success_records_success_metrics_with_primary_path(
         return expected
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch,
     )
 
@@ -1256,6 +1308,16 @@ async def test_execute_poll_success_records_success_metrics_with_primary_path(
     monkeypatch.setattr(
         "sentinel_prism.services.connectors.poll.ingestion_dedup.register_new_items",
         _dedupe,
+    )
+
+    async def _persist_noop(*_args: object, **_kwargs: object) -> None:
+        """Stub out persistence — these tests exercise poll control flow, not
+        the DB path (the real persist path is covered by ``test_captures_persist``)."""
+        return None
+
+    monkeypatch.setattr(
+        "sentinel_prism.services.connectors.poll.persist_new_items_after_dedup",
+        _persist_noop,
     )
 
     async def _clear(_s: object, _sid: uuid.UUID) -> None:
@@ -1323,7 +1385,7 @@ async def test_execute_poll_fallback_success_records_fetch_path_fallback(
         ]
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch_rss,
     )
 
@@ -1335,6 +1397,16 @@ async def test_execute_poll_fallback_success_records_fetch_path_fallback(
     monkeypatch.setattr(
         "sentinel_prism.services.connectors.poll.ingestion_dedup.register_new_items",
         _dedupe,
+    )
+
+    async def _persist_noop(*_args: object, **_kwargs: object) -> None:
+        """Stub out persistence — these tests exercise poll control flow, not
+        the DB path (the real persist path is covered by ``test_captures_persist``)."""
+        return None
+
+    monkeypatch.setattr(
+        "sentinel_prism.services.connectors.poll.persist_new_items_after_dedup",
+        _persist_noop,
     )
 
     async def _clear(_s: object, _sid: uuid.UUID) -> None:
@@ -1388,7 +1460,7 @@ async def test_execute_poll_dedup_failure_after_success_records_failure(
         ]
 
     monkeypatch.setattr(
-        "sentinel_prism.services.connectors.poll.fetch_rss_items",
+        "sentinel_prism.services.connectors.scout_fetch.fetch_rss_items",
         _fetch,
     )
 

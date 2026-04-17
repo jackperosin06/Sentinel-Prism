@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from sqlalchemy import func, select, type_coerce, update
+from sqlalchemy import func, literal_column, select, type_coerce, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,12 +114,21 @@ async def record_poll_failure(
             "error_class": error_class[:255],
         }
     }
-    # Postgres JSONB ``||`` merges top-level keys; wrapping in ``coalesce`` handles
-    # rows where ``extra_metadata`` is NULL. Counters use ``col = col + :n`` so
-    # concurrent pollers cannot lose increments (Story 2.6 review finding P1).
-    jsonb_expr = func.coalesce(
-        Source.extra_metadata, type_coerce({}, JSONB)
-    ).op("||")(type_coerce(patch, JSONB))
+    # Postgres JSONB ``||`` merges top-level keys *only* when both sides are objects;
+    # any scalar (including JSON ``null``) is silently promoted to a 1-element array
+    # and the result becomes ``[null, {...}]``. ``coalesce`` guards SQL NULL, so we
+    # also ``nullif(..., 'null'::jsonb)`` to downgrade the JSON-null scalar — this
+    # keeps legacy rows written before ``JSONB(none_as_null=True)`` was set on the
+    # column from poisoning the merge. Counters use ``col = col + :n`` so concurrent
+    # pollers cannot lose increments (Story 2.6 review finding P1).
+    # ``literal_column`` (not ``type_coerce("null", JSONB)``) because JSONB's
+    # bind_processor would ``json.dumps("null")`` → ``'"null"'`` (a JSON string),
+    # not the JSON ``null`` scalar we need to strip.
+    json_null = literal_column("'null'::jsonb")
+    current = func.nullif(Source.extra_metadata, json_null)
+    jsonb_expr = func.coalesce(current, type_coerce({}, JSONB)).op("||")(
+        type_coerce(patch, JSONB)
+    )
     stmt = (
         update(Source)
         .where(Source.id == source_id)

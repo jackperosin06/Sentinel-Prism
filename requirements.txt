@@ -1,4 +1,4 @@
-# Runtime (API) — graph stack (langgraph, langchain-core) pinned in Story 3.x
+# Runtime (API)
 fastapi==0.115.8
 uvicorn[standard]==0.34.0
 
@@ -28,3 +28,10 @@ httpx==0.28.1
 asgi-lifespan==2.1.0
 pytest==8.3.4
 pytest-asyncio==0.25.3
+
+# LangGraph orchestration (Story 3.2)
+langgraph==1.1.6
+langchain-core==1.2.31
+langgraph-checkpoint==4.0.2
+langgraph-prebuilt==1.0.9
+langgraph-sdk==0.3.13
