@@ -56,3 +56,12 @@
 
 - **npm audit (high, transitive):** Revisit `web/` dependency tree (`npm audit`, upgrades, or pin overrides) when doing a security pass — not blocking Story 1.1 acceptance criteria.
 - **docker-compose scope:** File was optional local tooling; ensure Epic 1 / Story 1.2 docs stay aligned if compose becomes canonical for dev DB.
+
+## Deferred from: code review of 2-6-per-source-metrics-exposure (2026-04-17)
+
+- **Primary exception dropped on non-`ConnectorFetchFailed` fallback error (Story 2.5):** In `poll.py`'s fallback-exception branch where `fb_other_exc` is not a `ConnectorFetchFailed`, `primary_exc` is captured but never persisted; operators investigating a both-failed source lose the primary failure context entirely. Fix during 2.5 commit cleanup.
+- **`_fallback_configured` silently no-ops for future `FallbackMode` variants without URL (Story 2.5):** The comment claims unknown modes surface via `_fetch_fallback`, but the function short-circuits to `False` whenever `url` is falsy. A future mode with an implicit URL (or a misconfigured row) silently bypasses fallback and is logged as a pure primary failure. Fix during 2.5 commit cleanup.
+- **`error_class` uses `"primary|fallback"` pipe separator (Story 2.5):** Existing column was a single class name; the new delimiter breaks downstream `WHERE error_class=?` filters and class names containing a literal `|` become unparseable. Re-model as two columns or structured JSON during 2.5 cleanup.
+- **PATCH `/sources/{id}` silently clears `fallback_url` when `fallback_mode=none` is sent alone (Story 2.5):** Two lines away, the code rejects the symmetric case (explicit `fallback_url=null`) as destructive, yet this implicit clear is allowed — inconsistent policy. Align during 2.5 cleanup.
+- **PATCH `/sources/{id}` TOCTOU on fallback-pair invariant (Story 2.5):** Concurrent admin PATCHes can commit a final state violating `_validate_fallback_pair` because the invariant lives only in API code. Needs `SELECT … FOR UPDATE`, a version column, or a DB-level `CHECK ((fallback_mode='none' AND fallback_url IS NULL) OR (fallback_mode<>'none' AND fallback_url IS NOT NULL))`. Defer to Epic 2 hardening or 2.5 cleanup.
+- **Alembic downgrade of `a7f6e5d4c3b2` drops accumulated metric state unconditionally:** Standard additive-migration trade-off — an ops rollback loses all ingestion counter history with no warning or backup hook. Document in the ops runbook (and, if preservation matters operationally, move counters to a separate table that survives schema rollbacks).

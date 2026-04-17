@@ -23,7 +23,7 @@ def test_alembic_heads_shows_latest_revision() -> None:
         check=False,
     )
     assert r.returncode == 0, r.stderr
-    assert "f8a3c1d2e4b5" in r.stdout
+    assert "a7f6e5d4c3b2" in r.stdout
 
 
 def test_alembic_upgrade_head_requires_sync_url() -> None:

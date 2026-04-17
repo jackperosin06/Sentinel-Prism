@@ -6,7 +6,18 @@ import uuid
 from datetime import datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -24,6 +35,14 @@ class SourceType(StrEnum):
 
     RSS = "rss"
     HTTP = "http"
+
+
+class FallbackMode(StrEnum):
+    """Alternate fetch when primary URL fails (Story 2.5 — FR5)."""
+
+    NONE = "none"
+    SAME_AS_PRIMARY = "same_as_primary"
+    HTML_PAGE = "html_page"
 
 
 class Base(DeclarativeBase):
@@ -91,7 +110,36 @@ class Source(Base):
         nullable=False,
     )
     primary_url: Mapped[str] = mapped_column(Text(), nullable=False)
+    fallback_url: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    fallback_mode: Mapped[FallbackMode] = mapped_column(
+        Enum(
+            FallbackMode,
+            native_enum=False,
+            length=32,
+            values_callable=_str_enum_values,
+        ),
+        nullable=False,
+        default=FallbackMode.NONE,
+        server_default=FallbackMode.NONE.value,
+    )
     schedule: Mapped[str] = mapped_column(String(512), nullable=False)
+    poll_attempts_success: Mapped[int] = mapped_column(
+        BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    poll_attempts_failed: Mapped[int] = mapped_column(
+        BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    items_ingested_total: Mapped[int] = mapped_column(
+        BigInteger(), nullable=False, default=0, server_default="0"
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_failure_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_success_latency_ms: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    last_success_fetch_path: Mapped[str | None] = mapped_column(String(16), nullable=True)
     extra_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(

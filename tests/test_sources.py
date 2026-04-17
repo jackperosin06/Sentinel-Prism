@@ -31,6 +31,10 @@ def test_sources_unauthenticated_returns_401(monkeypatch: pytest.MonkeyPatch) ->
             assert r.status_code == 401
             r2 = await client.get(f"/sources/{uuid.uuid4()}")
             assert r2.status_code == 401
+            r3 = await client.get("/sources/metrics")
+            assert r3.status_code == 401
+            r4 = await client.get(f"/sources/{uuid.uuid4()}/metrics")
+            assert r4.status_code == 401
 
     asyncio.run(_run())
 
@@ -144,6 +148,12 @@ async def test_sources_admin_crud_and_rbac_matrix(
             assert (
                 await client.delete(f"/sources/{uuid.uuid4()}", headers=h)
             ).status_code == 403
+            assert (
+                await client.get("/sources/metrics", headers=h)
+            ).status_code == 403
+            assert (
+                await client.get(f"/sources/{uuid.uuid4()}/metrics", headers=h)
+            ).status_code == 403
 
         h_admin = {"Authorization": f"Bearer {tokens['admin']}"}
 
@@ -156,6 +166,8 @@ async def test_sources_admin_crud_and_rbac_matrix(
         sid = body["id"]
         assert body["name"] == payload["name"]
         assert body["enabled"] is True
+        assert body.get("fallback_mode") == "none"
+        assert body.get("fallback_url") is None
 
         lst = await client.get("/sources", headers=h_admin)
         assert lst.status_code == 200

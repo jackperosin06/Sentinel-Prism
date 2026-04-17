@@ -4,20 +4,32 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select, type_coerce, update
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinel_prism.db.models import Source, SourceType
+from sentinel_prism.db.models import FallbackMode, Source, SourceType
+
+FetchPath = Literal["primary", "fallback"]
+_VALID_FETCH_PATHS: frozenset[str] = frozenset({"primary", "fallback"})
 
 
-async def list_sources(session: AsyncSession) -> list[Source]:
-    """All sources ordered by ``created_at`` ascending (stable list)."""
+async def list_sources(
+    session: AsyncSession,
+    *,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> list[Source]:
+    """Sources ordered by ``created_at`` ascending; optional pagination (Story 2.6)."""
 
-    result = await session.execute(
-        select(Source).order_by(Source.created_at.asc(), Source.id.asc())
-    )
+    stmt = select(Source).order_by(Source.created_at.asc(), Source.id.asc())
+    if offset is not None and offset > 0:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 
@@ -35,6 +47,8 @@ async def create_source(
     source_type: SourceType,
     primary_url: str,
     schedule: str,
+    fallback_url: str | None = None,
+    fallback_mode: FallbackMode = FallbackMode.NONE,
     enabled: bool = True,
     extra_metadata: dict[str, Any] | None = None,
 ) -> Source:
@@ -43,6 +57,8 @@ async def create_source(
         jurisdiction=jurisdiction,
         source_type=source_type,
         primary_url=primary_url,
+        fallback_url=fallback_url,
+        fallback_mode=fallback_mode,
         schedule=schedule,
         enabled=enabled,
         extra_metadata=extra_metadata,
@@ -86,18 +102,77 @@ async def record_poll_failure(
     reason: str,
     error_class: str,
 ) -> None:
-    """Merge ``last_poll_failure`` into ``Source.extra_metadata`` (Story 2.4 — FR4)."""
+    """Atomic merge of ``last_poll_failure`` + failure counter bump (Story 2.4 — FR4; 2.6 race-safe)."""
 
-    row = await get_source_by_id(session, source_id)
-    if row is None:
-        return
-    meta = dict(row.extra_metadata or {})
-    meta["last_poll_failure"] = {
-        "at": datetime.now(timezone.utc).isoformat(),
-        "reason": reason[:4000],
-        "error_class": error_class[:255],
+    now = datetime.now(timezone.utc)
+    # Store a JSON-native timestamp (not ``isoformat()``) so the DB and the API response
+    # share a single ``datetime`` contract — no ad-hoc string parsing in the serializer.
+    patch = {
+        "last_poll_failure": {
+            "at": now.isoformat(),
+            "reason": reason[:4000],
+            "error_class": error_class[:255],
+        }
     }
-    row.extra_metadata = meta
+    # Postgres JSONB ``||`` merges top-level keys; wrapping in ``coalesce`` handles
+    # rows where ``extra_metadata`` is NULL. Counters use ``col = col + :n`` so
+    # concurrent pollers cannot lose increments (Story 2.6 review finding P1).
+    jsonb_expr = func.coalesce(
+        Source.extra_metadata, type_coerce({}, JSONB)
+    ).op("||")(type_coerce(patch, JSONB))
+    stmt = (
+        update(Source)
+        .where(Source.id == source_id)
+        .values(
+            poll_attempts_failed=Source.poll_attempts_failed + 1,
+            last_failure_at=now,
+            extra_metadata=jsonb_expr,
+        )
+    )
+    await session.execute(stmt)
+    await session.flush()
+
+
+async def record_poll_success_metrics(
+    session: AsyncSession,
+    source_id: uuid.UUID,
+    *,
+    items_new_count: int,
+    latency_ms: int,
+    fetch_path: FetchPath,
+    fetched_at: datetime,
+) -> None:
+    """Atomic success-counter bump on the ``execute_poll`` success tail (Story 2.6 — NFR9)."""
+
+    # Reject unknown ``fetch_path`` values loudly rather than silently truncating to 16 chars;
+    # the column constraint is defensive, ``fetch_path`` is always "primary" or "fallback"
+    # in ``execute_poll``.
+    if fetch_path not in _VALID_FETCH_PATHS:
+        raise ValueError(
+            f"fetch_path must be 'primary' or 'fallback'; got {fetch_path!r}"
+        )
+    stmt = (
+        update(Source)
+        .where(Source.id == source_id)
+        .values(
+            poll_attempts_success=Source.poll_attempts_success + 1,
+            items_ingested_total=Source.items_ingested_total + int(items_new_count),
+            # ``fetched_at`` from ``execute_poll`` captures the moment of fetch,
+            # not dedup completion — dashboards on ``now - last_success_at`` stay accurate.
+            last_success_at=fetched_at,
+            last_success_latency_ms=int(latency_ms),
+            last_success_fetch_path=fetch_path,
+        )
+    )
+    await session.execute(stmt)
+    await session.flush()
+
+
+async def disable_source(session: AsyncSession, source_id: uuid.UUID) -> None:
+    """Atomically flip ``enabled`` to ``False`` (Story 2.6 — unsupported source_type auto-disable)."""
+
+    stmt = update(Source).where(Source.id == source_id).values(enabled=False)
+    await session.execute(stmt)
     await session.flush()
 
 
