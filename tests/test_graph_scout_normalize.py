@@ -122,10 +122,17 @@ async def test_graph_multi_item_fetch_exercises_list_reducers() -> None:
 
     assert len(out["raw_items"]) == 2
     assert len(out["normalized_updates"]) == 2
+    assert len(out["classifications"]) == 2
     assert {out["raw_items"][0]["item_url"], out["raw_items"][1]["item_url"]} == {
         "https://a/1",
         "https://a/2",
     }
+    for nu, cl in zip(out["normalized_updates"], out["classifications"], strict=True):
+        assert cl["source_id"] == nu["source_id"]
+        assert cl["item_url"] == nu["item_url"]
+        assert cl["needs_human_review"] is False
+        assert cl["in_scope"] is True
+        assert cl["severity"] == "medium"
 
 
 @pytest.mark.asyncio

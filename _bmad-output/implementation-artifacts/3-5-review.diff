@@ -1,0 +1,514 @@
+diff --git a/src/sentinel_prism/graph/graph.py b/src/sentinel_prism/graph/graph.py
+index 25b2aba..4fd6438 100644
+--- a/src/sentinel_prism/graph/graph.py
++++ b/src/sentinel_prism/graph/graph.py
+@@ -7,8 +7,15 @@ from langgraph.graph import END, START, StateGraph
+ from langgraph.graph.state import CompiledStateGraph
+ 
+ from sentinel_prism.graph.checkpoints import dev_memory_checkpointer
++from sentinel_prism.graph.nodes.classify import node_classify
++from sentinel_prism.graph.nodes.human_review_gate import node_human_review_gate
+ from sentinel_prism.graph.nodes.normalize import node_normalize
+ from sentinel_prism.graph.nodes.scout import node_scout
++from sentinel_prism.graph.routing import (
++    CLASSIFY_NEXT_CONTINUE,
++    CLASSIFY_NEXT_HUMAN_REVIEW,
++    route_after_classify,
++)
+ from sentinel_prism.graph.state import AgentState
+ 
+ 
+@@ -22,9 +29,20 @@ def build_regulatory_pipeline_graph() -> StateGraph:
+     builder: StateGraph = StateGraph(AgentState)
+     builder.add_node("scout", node_scout)
+     builder.add_node("normalize", node_normalize)
++    builder.add_node("classify", node_classify)
++    builder.add_node("human_review_gate", node_human_review_gate)
+     builder.add_edge(START, "scout")
+     builder.add_edge("scout", "normalize")
+-    builder.add_edge("normalize", END)
++    builder.add_edge("normalize", "classify")
++    builder.add_conditional_edges(
++        "classify",
++        route_after_classify,
++        {
++            CLASSIFY_NEXT_HUMAN_REVIEW: "human_review_gate",
++            CLASSIFY_NEXT_CONTINUE: END,
++        },
++    )
++    builder.add_edge("human_review_gate", END)
+     return builder
+ 
+ 
+diff --git a/src/sentinel_prism/graph/nodes/__init__.py b/src/sentinel_prism/graph/nodes/__init__.py
+index 64ccb8f..f59670d 100644
+--- a/src/sentinel_prism/graph/nodes/__init__.py
++++ b/src/sentinel_prism/graph/nodes/__init__.py
+@@ -1,6 +1,13 @@
+ """LangGraph node callables (Epic 3)."""
+ 
++from sentinel_prism.graph.nodes.classify import node_classify
++from sentinel_prism.graph.nodes.human_review_gate import node_human_review_gate
+ from sentinel_prism.graph.nodes.normalize import node_normalize
+ from sentinel_prism.graph.nodes.scout import node_scout
+ 
+-__all__ = ["node_normalize", "node_scout"]
++__all__ = [
++    "node_classify",
++    "node_human_review_gate",
++    "node_normalize",
++    "node_scout",
++]
+diff --git a/tests/test_graph_scout_normalize.py b/tests/test_graph_scout_normalize.py
+index f44274b..ef255dd 100644
+--- a/tests/test_graph_scout_normalize.py
++++ b/tests/test_graph_scout_normalize.py
+@@ -122,10 +122,17 @@ async def test_graph_multi_item_fetch_exercises_list_reducers() -> None:
+ 
+     assert len(out["raw_items"]) == 2
+     assert len(out["normalized_updates"]) == 2
++    assert len(out["classifications"]) == 2
+     assert {out["raw_items"][0]["item_url"], out["raw_items"][1]["item_url"]} == {
+         "https://a/1",
+         "https://a/2",
+     }
++    for nu, cl in zip(out["normalized_updates"], out["classifications"], strict=True):
++        assert cl["source_id"] == nu["source_id"]
++        assert cl["item_url"] == nu["item_url"]
++        assert cl["needs_human_review"] is False
++        assert cl["in_scope"] is True
++        assert cl["severity"] == "medium"
+ 
+ 
+ @pytest.mark.asyncio
+diff --git a/tests/test_graph_shell.py b/tests/test_graph_shell.py
+index 23fa2c3..fd146e8 100644
+--- a/tests/test_graph_shell.py
++++ b/tests/test_graph_shell.py
+@@ -93,8 +93,17 @@ async def test_compile_pipeline_round_trip_checkpoint() -> None:
+     assert len(out["normalized_updates"]) == 1
+     assert out["normalized_updates"][0]["title"] == "Hello"
+     assert out["normalized_updates"][0]["source_name"] == "Test Source"
++    assert len(out["classifications"]) == 1
++    clf0 = out["classifications"][0]
++    assert clf0["in_scope"] is True
++    assert clf0["item_url"] == item.item_url
++    assert clf0["source_id"] == source_id
++    assert clf0["needs_human_review"] is False
++    assert clf0["severity"] == "medium"
++    assert clf0["confidence"] == pytest.approx(0.85)
+     assert snap.values["run_id"] == run_id
+     assert len(snap.values["normalized_updates"]) == 1
++    assert len(snap.values["classifications"]) == 1
+ 
+ 
+ @pytest.mark.asyncio
+@@ -150,10 +159,17 @@ async def test_pipeline_logs_run_id_on_scout_and_normalize(
+     norm_done = [
+         r for r in caplog.records if getattr(r, "event", None) == "graph_normalize_done"
+     ]
++    clf_done = [
++        r for r in caplog.records if getattr(r, "event", None) == "graph_classify_llm_done"
++    ]
+     assert len(scout_done) == 1
+     assert scout_done[0].ctx["run_id"] == run_id
+     assert len(norm_done) == 1
+     assert norm_done[0].ctx["run_id"] == run_id
++    assert len(clf_done) == 1
++    assert clf_done[0].ctx["run_id"] == run_id
++    assert clf_done[0].ctx["model_id"] == "stub"
++    assert "prompt_version" in clf_done[0].ctx
+ 
+ 
+ def test_new_pipeline_state_normalizes_uuid() -> None:
+diff --git a/verify_imports.py b/verify_imports.py
+index 977c1eb..bd261dc 100644
+--- a/verify_imports.py
++++ b/verify_imports.py
+@@ -15,8 +15,14 @@ def main() -> None:
+     import langgraph.checkpoint.memory  # noqa: F401
+     import langgraph.graph  # noqa: F401
+ 
++    import sentinel_prism.graph.nodes.classify  # noqa: F401
++    import sentinel_prism.graph.nodes.human_review_gate  # noqa: F401
+     import sentinel_prism.graph.nodes.scout  # noqa: F401
+     import sentinel_prism.graph.nodes.normalize  # noqa: F401
++    import sentinel_prism.graph.routing  # noqa: F401
++    import sentinel_prism.services.llm.classification  # noqa: F401
++    import sentinel_prism.services.llm.rules  # noqa: F401
++    import sentinel_prism.services.llm.settings  # noqa: F401
+ 
+     print(
+         "imports ok: langgraph, langgraph.graph, langgraph.checkpoint.memory, "
+diff --git a/src/sentinel_prism/graph/routing.py b/src/sentinel_prism/graph/routing.py
+new file mode 100644
+index 0000000..3a2365d
+--- /dev/null
++++ b/src/sentinel_prism/graph/routing.py
+@@ -0,0 +1,24 @@
++"""Conditional routing after ``classify`` (Story 3.5).
++
++``route_after_classify`` reads **only** ``flags["needs_human_review"]``, which
++``node_classify`` maintains with OR semantics across classification rows. Do not
++re-derive routing by scanning ``classifications`` here — that would duplicate
++policy and risk drifting from classify.
++
++**Source of truth:** aggregate flag on ``AgentState.flags`` (Story 3.4).
++"""
++
++from __future__ import annotations
++
++from sentinel_prism.graph.state import AgentState
++
++# Return values must match keys in ``add_conditional_edges`` path map (``graph.py``).
++CLASSIFY_NEXT_HUMAN_REVIEW = "human_review_gate"
++CLASSIFY_NEXT_CONTINUE = "end"
++
++
++def route_after_classify(state: AgentState) -> str:
++    flags = state.get("flags") or {}
++    if flags.get("needs_human_review"):
++        return CLASSIFY_NEXT_HUMAN_REVIEW
++    return CLASSIFY_NEXT_CONTINUE
+diff --git a/src/sentinel_prism/graph/nodes/human_review_gate.py b/src/sentinel_prism/graph/nodes/human_review_gate.py
+new file mode 100644
+index 0000000..950624b
+--- /dev/null
++++ b/src/sentinel_prism/graph/nodes/human_review_gate.py
+@@ -0,0 +1,42 @@
++"""Human review gate — LangGraph interrupt for HITL (Story 3.5).
++
++On resume, LangGraph re-executes this node from the top; keep payload/logging
++idempotent or coordinate with Epic 4 resume semantics.
++"""
++
++from __future__ import annotations
++
++import logging
++from typing import Any
++
++from langgraph.types import interrupt
++
++from sentinel_prism.graph.state import AgentState
++
++logger = logging.getLogger(__name__)
++
++
++async def node_human_review_gate(state: AgentState) -> dict[str, Any]:
++    run_id = state.get("run_id") or ""
++    ctx: dict[str, Any] = {"run_id": run_id}
++    sid = state.get("source_id")
++    if sid is not None:
++        ctx["source_id"] = sid
++
++    logger.info(
++        "graph_human_review_gate",
++        extra={
++            "event": "graph_human_review_gate_interrupt",
++            "ctx": ctx,
++        },
++    )
++
++    payload: dict[str, Any] = {
++        "run_id": run_id,
++        "step": "human_review_gate",
++    }
++    if sid is not None:
++        payload["source_id"] = sid
++
++    interrupt(payload)
++    return {}
+diff --git a/tests/test_graph_conditional_edges.py b/tests/test_graph_conditional_edges.py
+new file mode 100644
+index 0000000..136f155
+--- /dev/null
++++ b/tests/test_graph_conditional_edges.py
+@@ -0,0 +1,288 @@
++"""Conditional edges after classify — review vs continue (Story 3.5)."""
++
++from __future__ import annotations
++
++import logging
++import uuid
++from datetime import datetime, timezone
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++
++from sentinel_prism.db.models import FallbackMode, SourceType
++from sentinel_prism.graph import compile_regulatory_pipeline_graph, new_pipeline_state
++from sentinel_prism.graph.routing import (
++    CLASSIFY_NEXT_CONTINUE,
++    CLASSIFY_NEXT_HUMAN_REVIEW,
++    route_after_classify,
++)
++from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
++from sentinel_prism.services.llm.classification import StructuredClassification
++
++
++def _fake_row() -> SimpleNamespace:
++    return SimpleNamespace(
++        enabled=True,
++        source_type=SourceType.RSS,
++        primary_url="https://ex.test/f",
++        fallback_url=None,
++        fallback_mode=FallbackMode.NONE,
++        name="Src",
++        jurisdiction="EU",
++    )
++
++
++def _session_factory_patch() -> MagicMock:
++    cm = MagicMock()
++    cm.__aenter__ = AsyncMock(return_value=MagicMock())
++    cm.__aexit__ = AsyncMock(return_value=None)
++    return MagicMock(return_value=cm)
++
++
++def test_route_after_classify_uses_flags_only() -> None:
++    assert (
++        route_after_classify(
++            {
++                "run_id": "r1",
++                "raw_items": [],
++                "normalized_updates": [],
++                "classifications": [],
++                "routing_decisions": [],
++                "briefings": [],
++                "delivery_events": [],
++                "errors": [],
++                "flags": {"needs_human_review": True},
++            }
++        )
++        == CLASSIFY_NEXT_HUMAN_REVIEW
++    )
++    assert (
++        route_after_classify(
++            {
++                "run_id": "r1",
++                "raw_items": [],
++                "normalized_updates": [],
++                "classifications": [],
++                "routing_decisions": [],
++                "briefings": [],
++                "delivery_events": [],
++                "errors": [],
++                "flags": {},
++            }
++        )
++        == CLASSIFY_NEXT_CONTINUE
++    )
++    assert (
++        route_after_classify(
++            {
++                "run_id": "r1",
++                "raw_items": [],
++                "normalized_updates": [],
++                "classifications": [],
++                "routing_decisions": [],
++                "briefings": [],
++                "delivery_events": [],
++                "errors": [],
++                "flags": {"needs_human_review": False},
++            }
++        )
++        == CLASSIFY_NEXT_CONTINUE
++    )
++
++
++@pytest.mark.asyncio
++async def test_pipeline_continue_path_no_interrupt(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    class Benign:
++        model_id = "stub"
++
++        async def classify(self, *_a: object, **_k: object) -> StructuredClassification:
++            return StructuredClassification(
++                severity="medium",
++                impact_categories=["labeling"],
++                urgency="informational",
++                rationale="routine",
++                confidence=0.9,
++            )
++
++    monkeypatch.setattr(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        lambda: Benign(),
++    )
++
++    run_id = str(uuid.uuid4())
++    source_id = str(uuid.uuid4())
++    row = _fake_row()
++    item = ScoutRawItem(
++        source_id=uuid.UUID(source_id),
++        item_url="https://news.example/c",
++        fetched_at=datetime.now(timezone.utc),
++        title="Hello",
++    )
++    factory = _session_factory_patch()
++    graph = compile_regulatory_pipeline_graph()
++    config = {"configurable": {"thread_id": run_id}}
++
++    with (
++        patch(
++            "sentinel_prism.graph.nodes.scout.get_session_factory",
++            return_value=factory,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.normalize.get_session_factory",
++            return_value=factory,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.scout.sources_repo.get_source_by_id",
++            new_callable=AsyncMock,
++            return_value=row,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.normalize.sources_repo.get_source_by_id",
++            new_callable=AsyncMock,
++            return_value=row,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.scout.fetch_scout_items_with_fallback",
++            new_callable=AsyncMock,
++            return_value=([item], "primary"),
++        ),
++    ):
++        out = await graph.ainvoke(
++            new_pipeline_state(run_id, source_id=source_id),
++            config,
++        )
++
++    assert "__interrupt__" not in out
++    assert out["run_id"] == run_id
++    assert out["flags"].get("needs_human_review") is not True
++
++
++@pytest.mark.asyncio
++async def test_pipeline_review_path_emits_interrupt(
++    caplog: pytest.LogCaptureFixture,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    caplog.set_level(logging.INFO)
++
++    class LowConf:
++        model_id = "stub"
++
++        async def classify(self, *_a: object, **_k: object) -> StructuredClassification:
++            return StructuredClassification(
++                severity="medium",
++                impact_categories=["labeling"],
++                urgency="informational",
++                rationale="uncertain",
++                confidence=0.2,
++            )
++
++    monkeypatch.setattr(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        lambda: LowConf(),
++    )
++
++    run_id = str(uuid.uuid4())
++    source_id = str(uuid.uuid4())
++    row = _fake_row()
++    item = ScoutRawItem(
++        source_id=uuid.UUID(source_id),
++        item_url="https://news.example/r",
++        fetched_at=datetime.now(timezone.utc),
++        title="Review me",
++    )
++    factory = _session_factory_patch()
++    graph = compile_regulatory_pipeline_graph()
++    config = {"configurable": {"thread_id": run_id}}
++
++    with (
++        patch(
++            "sentinel_prism.graph.nodes.scout.get_session_factory",
++            return_value=factory,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.normalize.get_session_factory",
++            return_value=factory,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.scout.sources_repo.get_source_by_id",
++            new_callable=AsyncMock,
++            return_value=row,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.normalize.sources_repo.get_source_by_id",
++            new_callable=AsyncMock,
++            return_value=row,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.scout.fetch_scout_items_with_fallback",
++            new_callable=AsyncMock,
++            return_value=([item], "primary"),
++        ),
++    ):
++        out = await graph.ainvoke(
++            new_pipeline_state(run_id, source_id=source_id),
++            config,
++        )
++
++    intr = out.get("__interrupt__")
++    assert intr is not None
++    assert len(intr) >= 1
++    val = intr[0].value
++    assert val["run_id"] == run_id
++    assert val["step"] == "human_review_gate"
++    assert val["source_id"] == source_id
++
++    gate_logs = [
++        r
++        for r in caplog.records
++        if getattr(r, "event", None) == "graph_human_review_gate_interrupt"
++    ]
++    assert len(gate_logs) == 1
++    assert gate_logs[0].ctx["run_id"] == run_id
++
++
++@pytest.mark.asyncio
++async def test_node_classify_source_id_uuid_coerced_to_str_on_row(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """Classification join key matches string form when normalized row uses UUID."""
++
++    class Benign:
++        model_id = "stub"
++
++        async def classify(self, *_a: object, **_k: object) -> StructuredClassification:
++            return StructuredClassification(
++                severity="medium",
++                impact_categories=["labeling"],
++                urgency="informational",
++                rationale="routine",
++                confidence=0.9,
++            )
++
++    monkeypatch.setattr(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        lambda: Benign(),
++    )
++
++    from sentinel_prism.graph.nodes.classify import node_classify
++
++    sid = uuid.uuid4()
++    state = new_pipeline_state(uuid.uuid4())
++    state["normalized_updates"] = [
++        {
++            "source_id": sid,
++            "item_url": "https://x/y",
++            "jurisdiction": "EU",
++            "document_type": "guidance",
++            "title": "t",
++            "summary": None,
++            "body_snippet": None,
++        }
++    ]
++    out = await node_classify(state)
++    row = out["classifications"][0]
++    assert row["source_id"] == str(sid)
++    assert row["item_url"] == "https://x/y"

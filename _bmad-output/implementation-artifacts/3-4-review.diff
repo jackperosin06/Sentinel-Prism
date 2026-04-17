@@ -1,0 +1,865 @@
+diff --git a/src/sentinel_prism/graph/graph.py b/src/sentinel_prism/graph/graph.py
+index 25b2aba..460d86a 100644
+--- a/src/sentinel_prism/graph/graph.py
++++ b/src/sentinel_prism/graph/graph.py
+@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
+ from langgraph.graph.state import CompiledStateGraph
+ 
+ from sentinel_prism.graph.checkpoints import dev_memory_checkpointer
++from sentinel_prism.graph.nodes.classify import node_classify
+ from sentinel_prism.graph.nodes.normalize import node_normalize
+ from sentinel_prism.graph.nodes.scout import node_scout
+ from sentinel_prism.graph.state import AgentState
+@@ -22,9 +23,11 @@ def build_regulatory_pipeline_graph() -> StateGraph:
+     builder: StateGraph = StateGraph(AgentState)
+     builder.add_node("scout", node_scout)
+     builder.add_node("normalize", node_normalize)
++    builder.add_node("classify", node_classify)
+     builder.add_edge(START, "scout")
+     builder.add_edge("scout", "normalize")
+-    builder.add_edge("normalize", END)
++    builder.add_edge("normalize", "classify")
++    builder.add_edge("classify", END)
+     return builder
+ 
+ 
+diff --git a/src/sentinel_prism/graph/nodes/__init__.py b/src/sentinel_prism/graph/nodes/__init__.py
+index 64ccb8f..b23b9bc 100644
+--- a/src/sentinel_prism/graph/nodes/__init__.py
++++ b/src/sentinel_prism/graph/nodes/__init__.py
+@@ -1,6 +1,7 @@
+ """LangGraph node callables (Epic 3)."""
+ 
++from sentinel_prism.graph.nodes.classify import node_classify
+ from sentinel_prism.graph.nodes.normalize import node_normalize
+ from sentinel_prism.graph.nodes.scout import node_scout
+ 
+-__all__ = ["node_normalize", "node_scout"]
++__all__ = ["node_classify", "node_normalize", "node_scout"]
+diff --git a/src/sentinel_prism/services/llm/__init__.py b/src/sentinel_prism/services/llm/__init__.py
+index 84a73bf..c1243bb 100644
+--- a/src/sentinel_prism/services/llm/__init__.py
++++ b/src/sentinel_prism/services/llm/__init__.py
+@@ -1,2 +1,20 @@
+-"""LLM client adapters — Story 3+."""
++"""LLM adapters — classification (Story 3.4)."""
+ 
++from sentinel_prism.services.llm.classification import (
++    ClassificationLLM,
++    StructuredClassification,
++    build_classification_llm,
++    classification_dict_for_state,
++)
++from sentinel_prism.services.llm.rules import RuleOutcome, evaluate_classification_rules
++from sentinel_prism.services.llm.settings import get_classification_llm_settings
++
++__all__ = [
++    "ClassificationLLM",
++    "RuleOutcome",
++    "StructuredClassification",
++    "build_classification_llm",
++    "classification_dict_for_state",
++    "evaluate_classification_rules",
++    "get_classification_llm_settings",
++]
+diff --git a/tests/test_graph_scout_normalize.py b/tests/test_graph_scout_normalize.py
+index f44274b..a5b1091 100644
+--- a/tests/test_graph_scout_normalize.py
++++ b/tests/test_graph_scout_normalize.py
+@@ -122,6 +122,7 @@ async def test_graph_multi_item_fetch_exercises_list_reducers() -> None:
+ 
+     assert len(out["raw_items"]) == 2
+     assert len(out["normalized_updates"]) == 2
++    assert len(out["classifications"]) == 2
+     assert {out["raw_items"][0]["item_url"], out["raw_items"][1]["item_url"]} == {
+         "https://a/1",
+         "https://a/2",
+diff --git a/tests/test_graph_shell.py b/tests/test_graph_shell.py
+index 23fa2c3..b5e2a4c 100644
+--- a/tests/test_graph_shell.py
++++ b/tests/test_graph_shell.py
+@@ -93,8 +93,12 @@ async def test_compile_pipeline_round_trip_checkpoint() -> None:
+     assert len(out["normalized_updates"]) == 1
+     assert out["normalized_updates"][0]["title"] == "Hello"
+     assert out["normalized_updates"][0]["source_name"] == "Test Source"
++    assert len(out["classifications"]) == 1
++    assert out["classifications"][0]["in_scope"] is True
++    assert out["classifications"][0]["item_url"] == item.item_url
+     assert snap.values["run_id"] == run_id
+     assert len(snap.values["normalized_updates"]) == 1
++    assert len(snap.values["classifications"]) == 1
+ 
+ 
+ @pytest.mark.asyncio
+@@ -150,10 +154,17 @@ async def test_pipeline_logs_run_id_on_scout_and_normalize(
+     norm_done = [
+         r for r in caplog.records if getattr(r, "event", None) == "graph_normalize_done"
+     ]
++    clf_done = [
++        r for r in caplog.records if getattr(r, "event", None) == "graph_classify_llm_done"
++    ]
+     assert len(scout_done) == 1
+     assert scout_done[0].ctx["run_id"] == run_id
+     assert len(norm_done) == 1
+     assert norm_done[0].ctx["run_id"] == run_id
++    assert len(clf_done) == 1
++    assert clf_done[0].ctx["run_id"] == run_id
++    assert clf_done[0].ctx["model_id"] == "stub"
++    assert "prompt_version" in clf_done[0].ctx
+ 
+ 
+ def test_new_pipeline_state_normalizes_uuid() -> None:
+diff --git a/verify_imports.py b/verify_imports.py
+index 977c1eb..243aebc 100644
+--- a/verify_imports.py
++++ b/verify_imports.py
+@@ -15,8 +15,10 @@ def main() -> None:
+     import langgraph.checkpoint.memory  # noqa: F401
+     import langgraph.graph  # noqa: F401
+ 
++    import sentinel_prism.graph.nodes.classify  # noqa: F401
+     import sentinel_prism.graph.nodes.scout  # noqa: F401
+     import sentinel_prism.graph.nodes.normalize  # noqa: F401
++    import sentinel_prism.services.llm.classification  # noqa: F401
+ 
+     print(
+         "imports ok: langgraph, langgraph.graph, langgraph.checkpoint.memory, "
+diff --git a/src/sentinel_prism/graph/nodes/classify.py b/src/sentinel_prism/graph/nodes/classify.py
+new file mode 100644
+index 0000000..775964a
+--- /dev/null
++++ b/src/sentinel_prism/graph/nodes/classify.py
+@@ -0,0 +1,146 @@
++"""Classify node — ``normalized_updates`` → ``classifications`` (Story 3.4)."""
++
++from __future__ import annotations
++
++import logging
++from typing import Any, Mapping
++
++from sentinel_prism.graph.state import AgentState
++from sentinel_prism.services.llm.classification import (
++    build_classification_llm,
++    classification_dict_for_state,
++)
++from sentinel_prism.services.llm.rules import evaluate_classification_rules
++from sentinel_prism.services.llm.settings import get_classification_llm_settings
++
++logger = logging.getLogger(__name__)
++
++
++async def node_classify(state: AgentState) -> dict[str, Any]:
++    run_id = state.get("run_id")
++    if not run_id or not str(run_id).strip():
++        raise ValueError("AgentState.run_id is required but missing or empty")
++
++    settings = get_classification_llm_settings()
++    llm = build_classification_llm()
++    model_id = settings.model_id
++    prompt_version = settings.prompt_version
++
++    norms: list[Any] = list(state.get("normalized_updates") or [])
++    if not norms:
++        logger.info(
++            "graph_classify",
++            extra={
++                "event": "graph_classify_empty",
++                "ctx": {"run_id": run_id},
++            },
++        )
++        return {}
++
++    classifications: list[dict[str, Any]] = []
++    err_accum: list[dict[str, Any]] = []
++    any_review = bool(state.get("flags", {}).get("needs_human_review"))
++
++    for item in norms:
++        if not isinstance(item, Mapping):
++            err_accum.append(
++                {
++                    "step": "classify",
++                    "message": "normalized_update_not_a_mapping",
++                    "error_class": "TypeError",
++                    "detail": type(item).__name__,
++                }
++            )
++            continue
++
++        normalized: dict[str, Any] = dict(item)
++        rule_outcome = evaluate_classification_rules(normalized)
++
++        if not rule_outcome.in_scope:
++            classifications.append(
++                classification_dict_for_state(
++                    normalized=normalized,
++                    rule_outcome=rule_outcome,
++                    llm=None,
++                )
++            )
++            continue
++
++        try:
++            llm_out = await llm.classify(
++                normalized,
++                model_id=model_id,
++                prompt_version=prompt_version,
++            )
++        except Exception as exc:
++            logger.warning(
++                "graph_classify",
++                extra={
++                    "event": "graph_classify_llm_error",
++                    "ctx": {
++                        "run_id": run_id,
++                        "model_id": model_id,
++                        "prompt_version": prompt_version,
++                        "error_class": type(exc).__name__,
++                        "item_url": normalized.get("item_url"),
++                    },
++                },
++            )
++            err_accum.append(
++                {
++                    "step": "classify",
++                    "message": "llm_error",
++                    "error_class": type(exc).__name__,
++                    "detail": str(exc),
++                }
++            )
++            continue
++
++        logger.info(
++            "graph_classify",
++            extra={
++                "event": "graph_classify_llm_done",
++                "ctx": {
++                    "run_id": run_id,
++                    "model_id": model_id,
++                    "prompt_version": prompt_version,
++                    "item_url": normalized.get("item_url"),
++                },
++            },
++        )
++
++        row = classification_dict_for_state(
++            normalized=normalized,
++            rule_outcome=rule_outcome,
++            llm=llm_out,
++        )
++        classifications.append(row)
++        if row.get("needs_human_review"):
++            any_review = True
++
++    out: dict[str, Any] = {
++        "classifications": classifications,
++        "llm_trace": {
++            "model_id": model_id,
++            "prompt_version": prompt_version,
++            "last_node": "classify",
++        },
++    }
++    if any_review:
++        merged_flags = dict(state.get("flags") or {})
++        merged_flags["needs_human_review"] = True
++        out["flags"] = merged_flags
++    if err_accum:
++        out["errors"] = err_accum
++
++    logger.info(
++        "graph_classify",
++        extra={
++            "event": "graph_classify_done",
++            "ctx": {
++                "run_id": run_id,
++                "classification_count": len(classifications),
++            },
++        },
++    )
++    return out
+diff --git a/src/sentinel_prism/services/llm/classification.py b/src/sentinel_prism/services/llm/classification.py
+new file mode 100644
+index 0000000..996d7f9
+--- /dev/null
++++ b/src/sentinel_prism/services/llm/classification.py
+@@ -0,0 +1,186 @@
++"""Structured classification schema, LLM protocol, and factory (Story 3.4)."""
++
++from __future__ import annotations
++
++import logging
++import os
++from typing import Any, Literal, Protocol, runtime_checkable
++
++from langchain_core.messages import HumanMessage, SystemMessage
++from pydantic import BaseModel, Field
++
++from sentinel_prism.services.llm.rules import RuleOutcome
++from sentinel_prism.services.llm.settings import DEFAULT_PROMPT_VERSION
++
++logger = logging.getLogger(__name__)
++
++Severity = Literal["critical", "high", "medium", "low"]
++Urgency = Literal["immediate", "time_bound", "informational"]
++
++CLASSIFICATION_SYSTEM_PROMPT = """You are a regulatory monitoring classifier. Given a normalized \
++public-source update, assign severity, impact categories, urgency, a short rationale, and a \
++confidence score in [0,1]. Use only the provided fields; do not invent citations."""
++
++PROMPT_VERSION = DEFAULT_PROMPT_VERSION
++
++
++class StructuredClassification(BaseModel):
++    """LLM output shape for in-scope items (validated before merging into AgentState)."""
++
++    severity: Severity
++    impact_categories: list[str] = Field(default_factory=list)
++    urgency: Urgency
++    rationale: str
++    confidence: float = Field(ge=0.0, le=1.0)
++
++
++def format_classification_user_message(normalized: dict[str, Any]) -> str:
++    lines = [
++        f"item_url: {normalized.get('item_url', '')}",
++        f"jurisdiction: {normalized.get('jurisdiction', '')}",
++        f"document_type: {normalized.get('document_type', '')}",
++        f"title: {normalized.get('title', '')}",
++        f"summary: {normalized.get('summary', '')}",
++        f"body_snippet: {normalized.get('body_snippet', '')}",
++    ]
++    return "\n".join(lines)
++
++
++def classification_dict_for_state(
++    *,
++    normalized: dict[str, Any],
++    rule_outcome: RuleOutcome,
++    llm: StructuredClassification | None,
++) -> dict[str, Any]:
++    """Build one checkpoint-safe classification dict (AC #1).
++
++    **Out-of-scope:** ``severity`` and ``urgency`` are JSON ``null`` (``None``); \
++    ``impact_categories`` is ``[]``; ``rationale`` is ``rules_rejected``.
++    """
++
++    source_id = normalized.get("source_id")
++    item_url = normalized.get("item_url")
++    base: dict[str, Any] = {
++        "source_id": "" if source_id is None else str(source_id),
++        "item_url": "" if item_url is None else str(item_url),
++        "in_scope": rule_outcome.in_scope,
++        "rule_reasons": list(rule_outcome.reasons),
++    }
++
++    if not rule_outcome.in_scope:
++        base.update(
++            {
++                "severity": None,
++                "impact_categories": [],
++                "urgency": None,
++                "rationale": "rules_rejected",
++                "confidence": 0.0,
++                "needs_human_review": False,
++            }
++        )
++        return base
++
++    assert llm is not None
++    needs = llm.confidence < 0.5 or llm.severity == "critical"
++    base.update(
++        {
++            "severity": llm.severity,
++            "impact_categories": list(llm.impact_categories),
++            "urgency": llm.urgency,
++            "rationale": llm.rationale,
++            "confidence": llm.confidence,
++            "needs_human_review": needs,
++        }
++    )
++    return base
++
++
++@runtime_checkable
++class ClassificationLLM(Protocol):
++    async def classify(
++        self,
++        normalized: dict[str, Any],
++        *,
++        model_id: str,
++        prompt_version: str,
++    ) -> StructuredClassification: ...
++
++
++class StubClassificationLLM:
++    """Deterministic offline classifier for CI and local dev."""
++
++    async def classify(
++        self,
++        normalized: dict[str, Any],
++        *,
++        model_id: str,
++        prompt_version: str,
++    ) -> StructuredClassification:
++        _ = normalized, model_id, prompt_version
++        return StructuredClassification(
++            severity="medium",
++            impact_categories=["labeling"],
++            urgency="informational",
++            rationale="stub_llm",
++            confidence=0.85,
++        )
++
++
++class LangChainStructuredClassificationLlm:
++    """Optional OpenAI path when ``langchain-openai`` and ``OPENAI_API_KEY`` are available."""
++
++    def __init__(
++        self,
++        chain: Any,
++        *,
++        model_id: str,
++    ) -> None:
++        self._chain = chain
++        self._model_id = model_id
++
++    async def classify(
++        self,
++        normalized: dict[str, Any],
++        *,
++        model_id: str,
++        prompt_version: str,
++    ) -> StructuredClassification:
++        _ = model_id
++        messages = [
++            SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
++            HumanMessage(content=format_classification_user_message(normalized)),
++        ]
++        out = await self._chain.ainvoke(messages)
++        if isinstance(out, StructuredClassification):
++            return out
++        raise TypeError(
++            f"structured output expected StructuredClassification, got {type(out)}"
++        )
++
++
++def build_classification_llm() -> ClassificationLLM:
++    """Return stub by default; OpenAI + structured output when configured.
++
++    Does **not** add a hard dependency on ``langchain-openai`` — import is lazy.
++    """
++
++    key = os.getenv("OPENAI_API_KEY", "").strip()
++    if not key:
++        return StubClassificationLLM()
++
++    try:
++        from langchain_openai import ChatOpenAI
++    except ImportError:
++        logger.warning(
++            "classification_llm_openai_unavailable",
++            extra={
++                "event": "classification_llm_openai_unavailable",
++                "ctx": {"reason": "langchain_openai_not_installed"},
++            },
++        )
++        return StubClassificationLLM()
++
++    model_name = os.getenv("SENTINEL_OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
++    chat = ChatOpenAI(model=model_name, temperature=0)
++    chain = chat.with_structured_output(StructuredClassification)
++    return LangChainStructuredClassificationLlm(chain, model_id=model_name)
+\ No newline at end of file
+diff --git a/src/sentinel_prism/services/llm/rules.py b/src/sentinel_prism/services/llm/rules.py
+new file mode 100644
+index 0000000..e40e219
+--- /dev/null
++++ b/src/sentinel_prism/services/llm/rules.py
+@@ -0,0 +1,75 @@
++"""Deterministic in-scope rules before LLM classify (Story 3.4 — FR11)."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Any, FrozenSet
++
++# MVP: explicit allowlist; extend via env-driven config in a later story if needed.
++JURISDICTION_ALLOWLIST: FrozenSet[str] = frozenset(
++    {"US", "EU", "UK", "GLOBAL", "CA", "JP", "CH"}
++)
++
++DOCUMENT_TYPES_EXCLUDED: FrozenSet[str] = frozenset({"spam", "noise"})
++
++
++@dataclass(frozen=True)
++class RuleOutcome:
++    """Result of rule evaluation on a normalized update dict."""
++
++    in_scope: bool
++    reasons: tuple[str, ...]
++
++
++def _jurisdiction_allowed(raw: str | None) -> bool:
++    if raw is None:
++        return True
++    j = raw.strip().upper()
++    if not j:
++        return True
++    if j in JURISDICTION_ALLOWLIST:
++        return True
++    if "-" in j:
++        prefix = j.split("-", 1)[0]
++        if prefix in JURISDICTION_ALLOWLIST:
++            return True
++    return False
++
++
++def evaluate_classification_rules(update: dict[str, Any]) -> RuleOutcome:
++    """Return whether the update is eligible for LLM classification.
++
++    Out-of-scope updates skip the LLM entirely (AC #2).
++    """
++
++    reasons: list[str] = []
++    jurisdiction = update.get("jurisdiction")
++    if not _jurisdiction_allowed(
++        jurisdiction if isinstance(jurisdiction, str) else None
++    ):
++        reasons.append("jurisdiction_not_in_allowlist")
++        return RuleOutcome(False, tuple(reasons))
++
++    doc_raw = update.get("document_type")
++    doc = (
++        doc_raw.strip().lower()
++        if isinstance(doc_raw, str) and doc_raw.strip()
++        else ""
++    )
++    if doc in DOCUMENT_TYPES_EXCLUDED:
++        reasons.append("document_type_excluded")
++        return RuleOutcome(False, tuple(reasons))
++
++    title = update.get("title")
++    summary = update.get("summary")
++    body = update.get("body_snippet")
++    has_text = bool(
++        (isinstance(title, str) and title.strip())
++        or (isinstance(summary, str) and summary.strip())
++        or (isinstance(body, str) and body.strip())
++    )
++    if not has_text:
++        reasons.append("insufficient_content")
++        return RuleOutcome(False, tuple(reasons))
++
++    return RuleOutcome(True, ())
+diff --git a/src/sentinel_prism/services/llm/settings.py b/src/sentinel_prism/services/llm/settings.py
+new file mode 100644
+index 0000000..79f816e
+--- /dev/null
++++ b/src/sentinel_prism/services/llm/settings.py
+@@ -0,0 +1,30 @@
++"""Environment-backed defaults for classification LLM (Story 3.4)."""
++
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass
++from functools import lru_cache
++
++DEFAULT_PROMPT_VERSION = "mvp-1"
++
++
++@dataclass(frozen=True)
++class ClassificationLlmSettings:
++    """Logical model id and prompt version for audit logs / ``llm_trace`` (not secrets)."""
++
++    model_id: str
++    prompt_version: str
++
++
++@lru_cache
++def get_classification_llm_settings() -> ClassificationLlmSettings:
++    return ClassificationLlmSettings(
++        model_id=os.getenv("SENTINEL_CLASSIFICATION_MODEL_ID", "stub").strip()
++        or "stub",
++        prompt_version=(
++            os.getenv("SENTINEL_CLASSIFICATION_PROMPT_VERSION", DEFAULT_PROMPT_VERSION)
++            .strip()
++            or DEFAULT_PROMPT_VERSION
++        ),
++    )
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..8307dab
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,12 @@
++"""Shared pytest fixtures."""
++
++from __future__ import annotations
++
++import pytest
++
++
++@pytest.fixture(autouse=True)
++def _clear_openai_api_key_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Force classification to use the stub LLM in CI (Story 3.4)."""
++
++    monkeypatch.setenv("OPENAI_API_KEY", "")
+diff --git a/tests/test_graph_classify.py b/tests/test_graph_classify.py
+new file mode 100644
+index 0000000..94d7061
+--- /dev/null
++++ b/tests/test_graph_classify.py
+@@ -0,0 +1,175 @@
++"""Classify node and graph wiring (Story 3.4)."""
++
++from __future__ import annotations
++
++import logging
++import uuid
++from datetime import datetime, timezone
++from types import SimpleNamespace
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++
++from sentinel_prism.db.models import FallbackMode, SourceType
++from sentinel_prism.graph import compile_regulatory_pipeline_graph, new_pipeline_state
++from sentinel_prism.graph.nodes.classify import node_classify
++from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
++from sentinel_prism.services.llm.classification import (
++    StructuredClassification,
++    build_classification_llm,
++)
++
++
++def _fake_row() -> SimpleNamespace:
++    return SimpleNamespace(
++        enabled=True,
++        source_type=SourceType.RSS,
++        primary_url="https://ex.test/f",
++        fallback_url=None,
++        fallback_mode=FallbackMode.NONE,
++        name="Src",
++        jurisdiction="EU",
++    )
++
++
++def _session_factory_patch() -> MagicMock:
++    cm = MagicMock()
++    cm.__aenter__ = AsyncMock(return_value=MagicMock())
++    cm.__aexit__ = AsyncMock(return_value=None)
++    return MagicMock(return_value=cm)
++
++
++def _normalized_stub(**overrides: object) -> dict:
++    base = {
++        "source_id": str(uuid.uuid4()),
++        "item_url": "https://n/1",
++        "jurisdiction": "EU",
++        "document_type": "unknown",
++        "title": "Label change",
++        "summary": None,
++        "body_snippet": None,
++    }
++    base.update(overrides)
++    return base
++
++
++@pytest.mark.asyncio
++async def test_node_classify_out_of_scope_skips_llm(monkeypatch: pytest.MonkeyPatch) -> None:
++    async def boom(*_a: object, **_k: object) -> StructuredClassification:
++        raise AssertionError("LLM must not run when rules reject")
++
++    monkeypatch.setattr(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        lambda: type(
++            "X",
++            (),
++            {"classify": staticmethod(boom)},
++        )(),
++    )
++
++    state = new_pipeline_state(uuid.uuid4())
++    state["normalized_updates"] = [
++        _normalized_stub(jurisdiction="ZZ-REJECT", title="x"),
++    ]
++    out = await node_classify(state)
++    assert len(out["classifications"]) == 1
++    row = out["classifications"][0]
++    assert row["in_scope"] is False
++    assert row["rationale"] == "rules_rejected"
++    assert row["severity"] is None
++    assert row["urgency"] is None
++
++
++@pytest.mark.asyncio
++async def test_node_classify_llm_error_appends_errors(caplog: pytest.LogCaptureFixture) -> None:
++    caplog.set_level(logging.WARNING)
++
++    class BoomLlm:
++        async def classify(self, *_a: object, **_k: object) -> StructuredClassification:
++            raise RuntimeError("provider down")
++
++    with patch(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        return_value=BoomLlm(),
++    ):
++        state = new_pipeline_state(uuid.uuid4())
++        state["normalized_updates"] = [_normalized_stub()]
++        out = await node_classify(state)
++
++    assert out["errors"][0]["message"] == "llm_error"
++    assert out["errors"][0]["step"] == "classify"
++    assert out["classifications"] == []
++    err_ev = [r for r in caplog.records if getattr(r, "event", None) == "graph_classify_llm_error"]
++    assert len(err_ev) == 1
++    assert err_ev[0].ctx["run_id"] == state["run_id"]
++
++
++@pytest.mark.asyncio
++async def test_graph_classify_matches_normalized_count() -> None:
++    run_id = str(uuid.uuid4())
++    source_id = str(uuid.uuid4())
++    row = _fake_row()
++    i1 = ScoutRawItem(
++        source_id=uuid.UUID(source_id),
++        item_url="https://a/1",
++        fetched_at=datetime.now(timezone.utc),
++        title="One",
++    )
++    i2 = ScoutRawItem(
++        source_id=uuid.UUID(source_id),
++        item_url="https://a/2",
++        fetched_at=datetime.now(timezone.utc),
++        title="Two",
++    )
++    factory = _session_factory_patch()
++    graph = compile_regulatory_pipeline_graph()
++    config = {"configurable": {"thread_id": run_id}}
++
++    with (
++        patch(
++            "sentinel_prism.graph.nodes.scout.get_session_factory",
++            return_value=factory,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.normalize.get_session_factory",
++            return_value=factory,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.scout.sources_repo.get_source_by_id",
++            new_callable=AsyncMock,
++            return_value=row,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.normalize.sources_repo.get_source_by_id",
++            new_callable=AsyncMock,
++            return_value=row,
++        ),
++        patch(
++            "sentinel_prism.graph.nodes.scout.fetch_scout_items_with_fallback",
++            new_callable=AsyncMock,
++            return_value=([i1, i2], "primary"),
++        ),
++    ):
++        out = await graph.ainvoke(
++            new_pipeline_state(run_id, source_id=source_id),
++            config,
++        )
++
++    assert len(out["normalized_updates"]) == 2
++    assert len(out["classifications"]) == 2
++    for nu, cl in zip(out["normalized_updates"], out["classifications"], strict=True):
++        assert cl["source_id"] == nu["source_id"]
++        assert cl["item_url"] == nu["item_url"]
++        assert cl["in_scope"] is True
++        assert cl["severity"] == "medium"
++
++
++@pytest.mark.asyncio
++async def test_build_classification_llm_returns_stub_without_key() -> None:
++    llm = build_classification_llm()
++    out = await llm.classify(
++        _normalized_stub(),
++        model_id="stub",
++        prompt_version="mvp-1",
++    )
++    assert out.rationale == "stub_llm"
+diff --git a/tests/test_llm_classification_rules.py b/tests/test_llm_classification_rules.py
+new file mode 100644
+index 0000000..9853a95
+--- /dev/null
++++ b/tests/test_llm_classification_rules.py
+@@ -0,0 +1,72 @@
++"""Unit tests for classification rules (Story 3.4)."""
++
++from __future__ import annotations
++
++import uuid
++
++from sentinel_prism.services.llm.rules import evaluate_classification_rules
++
++
++def test_rules_in_scope_typical_update() -> None:
++    out = evaluate_classification_rules(
++        {
++            "source_id": str(uuid.uuid4()),
++            "item_url": "https://x/y",
++            "jurisdiction": "EU",
++            "document_type": "unknown",
++            "title": "Safety notice",
++            "summary": None,
++            "body_snippet": None,
++        }
++    )
++    assert out.in_scope is True
++    assert out.reasons == ()
++
++
++def test_rules_out_of_scope_jurisdiction() -> None:
++    out = evaluate_classification_rules(
++        {
++            "jurisdiction": "ZZ-XX",
++            "document_type": "unknown",
++            "title": "T",
++        }
++    )
++    assert out.in_scope is False
++    assert "jurisdiction_not_in_allowlist" in out.reasons
++
++
++def test_rules_out_of_scope_document_type() -> None:
++    out = evaluate_classification_rules(
++        {
++            "jurisdiction": "US",
++            "document_type": "spam",
++            "title": "Buy now",
++        }
++    )
++    assert out.in_scope is False
++    assert "document_type_excluded" in out.reasons
++
++
++def test_rules_out_of_scope_insufficient_content() -> None:
++    out = evaluate_classification_rules(
++        {
++            "jurisdiction": "US",
++            "document_type": "unknown",
++            "title": None,
++            "summary": "",
++            "body_snippet": "   ",
++        }
++    )
++    assert out.in_scope is False
++    assert "insufficient_content" in out.reasons
++
++
++def test_jurisdiction_us_ca_prefix_allowed() -> None:
++    out = evaluate_classification_rules(
++        {
++            "jurisdiction": "US-CA",
++            "document_type": "unknown",
++            "title": "Hello",
++        }
++    )
++    assert out.in_scope is True

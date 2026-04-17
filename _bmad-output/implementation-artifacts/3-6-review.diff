@@ -1,0 +1,491 @@
+diff --git a/.env.example b/.env.example
+index 214ee9f..64d652a 100644
+--- a/.env.example
++++ b/.env.example
+@@ -14,6 +14,9 @@ JWT_EXPIRE_MINUTES=60
+ # Credential verifier for POST /auth/login (Story 1.5): local (default) | stub (dev/tests only).
+ AUTH_PROVIDER=local
+ 
++# Classification LLM: max LangGraph node attempts for transient failures (Story 3.6). Integer 2–10, default 3.
++# SENTINEL_CLASSIFICATION_MAX_ATTEMPTS=3
++
+ # Optional: docker-compose Postgres (local dev)
+ POSTGRES_USER=sentinel
+ POSTGRES_PASSWORD=change-me-local-only
+diff --git a/src/sentinel_prism/graph/graph.py b/src/sentinel_prism/graph/graph.py
+index 4fd6438..07a10f2 100644
+--- a/src/sentinel_prism/graph/graph.py
++++ b/src/sentinel_prism/graph/graph.py
+@@ -11,6 +11,7 @@ from sentinel_prism.graph.nodes.classify import node_classify
+ from sentinel_prism.graph.nodes.human_review_gate import node_human_review_gate
+ from sentinel_prism.graph.nodes.normalize import node_normalize
+ from sentinel_prism.graph.nodes.scout import node_scout
++from sentinel_prism.graph.retry import classify_node_retry_policy
+ from sentinel_prism.graph.routing import (
+     CLASSIFY_NEXT_CONTINUE,
+     CLASSIFY_NEXT_HUMAN_REVIEW,
+@@ -29,7 +30,11 @@ def build_regulatory_pipeline_graph() -> StateGraph:
+     builder: StateGraph = StateGraph(AgentState)
+     builder.add_node("scout", node_scout)
+     builder.add_node("normalize", node_normalize)
+-    builder.add_node("classify", node_classify)
++    builder.add_node(
++        "classify",
++        node_classify,
++        retry_policy=classify_node_retry_policy(),
++    )
+     builder.add_node("human_review_gate", node_human_review_gate)
+     builder.add_edge(START, "scout")
+     builder.add_edge("scout", "normalize")
+diff --git a/src/sentinel_prism/graph/nodes/classify.py b/src/sentinel_prism/graph/nodes/classify.py
+index 775964a..4ae3f8a 100644
+--- a/src/sentinel_prism/graph/nodes/classify.py
++++ b/src/sentinel_prism/graph/nodes/classify.py
+@@ -8,8 +8,10 @@ from typing import Any, Mapping
+ from sentinel_prism.graph.state import AgentState
+ from sentinel_prism.services.llm.classification import (
+     build_classification_llm,
++    classification_dict_for_llm_error,
+     classification_dict_for_state,
+ )
++from sentinel_prism.services.llm.classification_retry import is_transient_classification_error
+ from sentinel_prism.services.llm.rules import evaluate_classification_rules
+ from sentinel_prism.services.llm.settings import get_classification_llm_settings
+ 
+@@ -23,7 +25,9 @@ async def node_classify(state: AgentState) -> dict[str, Any]:
+ 
+     settings = get_classification_llm_settings()
+     llm = build_classification_llm()
+-    model_id = settings.model_id
++    # Prefer the LLM's **actual** model_id (e.g. real OpenAI model name) over the
++    # settings default so logs and llm_trace reflect the call that was made.
++    model_id = getattr(llm, "model_id", None) or settings.model_id
+     prompt_version = settings.prompt_version
+ 
+     norms: list[Any] = list(state.get("normalized_updates") or [])
+@@ -39,7 +43,9 @@ async def node_classify(state: AgentState) -> dict[str, Any]:
+ 
+     classifications: list[dict[str, Any]] = []
+     err_accum: list[dict[str, Any]] = []
+-    any_review = bool(state.get("flags", {}).get("needs_human_review"))
++    any_review = bool((state.get("flags") or {}).get("needs_human_review"))
++    llm_success_count = 0
++    llm_error_count = 0
+ 
+     for item in norms:
+         if not isinstance(item, Mapping):
+@@ -73,6 +79,22 @@ async def node_classify(state: AgentState) -> dict[str, Any]:
+                 prompt_version=prompt_version,
+             )
+         except Exception as exc:
++            if is_transient_classification_error(exc):
++                logger.warning(
++                    "graph_classify",
++                    extra={
++                        "event": "graph_classify_llm_transient",
++                        "ctx": {
++                            "run_id": run_id,
++                            "step": "classify",
++                            "model_id": model_id,
++                            "prompt_version": prompt_version,
++                            "error_class": type(exc).__name__,
++                            "item_url": normalized.get("item_url"),
++                        },
++                    },
++                )
++                raise
+             logger.warning(
+                 "graph_classify",
+                 extra={
+@@ -94,6 +116,16 @@ async def node_classify(state: AgentState) -> dict[str, Any]:
+                     "detail": str(exc),
+                 }
+             )
++            # Preserve AC #1 1:1 invariant: emit a placeholder row flagged for review
++            # so downstream joins on ``source_id`` / ``item_url`` never lose an item.
++            classifications.append(
++                classification_dict_for_llm_error(
++                    normalized=normalized,
++                    rule_outcome=rule_outcome,
++                )
++            )
++            any_review = True
++            llm_error_count += 1
+             continue
+ 
+         logger.info(
+@@ -115,17 +147,30 @@ async def node_classify(state: AgentState) -> dict[str, Any]:
+             llm=llm_out,
+         )
+         classifications.append(row)
++        llm_success_count += 1
+         if row.get("needs_human_review"):
+             any_review = True
+ 
+     out: dict[str, Any] = {
+         "classifications": classifications,
+-        "llm_trace": {
++    }
++    # Only emit ``llm_trace`` when an LLM call was actually attempted for this node
++    # run. Pure validation errors (e.g. non-mapping items) do not produce a trace,
++    # and a run where every in-scope call errored gets ``status="all_failed"``.
++    if llm_success_count > 0:
++        out["llm_trace"] = {
+             "model_id": model_id,
+             "prompt_version": prompt_version,
+             "last_node": "classify",
+-        },
+-    }
++            "status": "ok",
++        }
++    elif llm_error_count > 0:
++        out["llm_trace"] = {
++            "model_id": model_id,
++            "prompt_version": prompt_version,
++            "last_node": "classify",
++            "status": "all_failed",
++        }
+     if any_review:
+         merged_flags = dict(state.get("flags") or {})
+         merged_flags["needs_human_review"] = True
+diff --git a/src/sentinel_prism/graph/retry.py b/src/sentinel_prism/graph/retry.py
+new file mode 100644
+index 0000000..dc4577d
+--- /dev/null
++++ b/src/sentinel_prism/graph/retry.py
+@@ -0,0 +1,22 @@
++"""LangGraph retry policies for pipeline nodes (Story 3.6)."""
++
++from __future__ import annotations
++
++from langgraph.types import RetryPolicy
++
++from sentinel_prism.services.llm.classification_retry import is_transient_classification_error
++from sentinel_prism.services.llm.settings import get_classification_retry_settings
++
++
++def classify_node_retry_policy() -> RetryPolicy:
++    """Retry transient LLM / HTTP failures on the ``classify`` node without new ``run_id``."""
++
++    s = get_classification_retry_settings()
++    return RetryPolicy(
++        initial_interval=s.initial_interval,
++        backoff_factor=s.backoff_factor,
++        max_interval=s.max_interval,
++        max_attempts=s.max_attempts,
++        jitter=s.jitter,
++        retry_on=is_transient_classification_error,
++    )
+diff --git a/src/sentinel_prism/services/llm/classification_retry.py b/src/sentinel_prism/services/llm/classification_retry.py
+new file mode 100644
+index 0000000..6fdf2b1
+--- /dev/null
++++ b/src/sentinel_prism/services/llm/classification_retry.py
+@@ -0,0 +1,37 @@
++"""Transient error detection for classification LLM retries (Story 3.6)."""
++
++from __future__ import annotations
++
++
++def is_transient_classification_error(exc: BaseException) -> bool:
++    """Return True when LangGraph (or operators) should retry the classify node.
++
++    Aligns with :func:`langgraph.types.default_retry_on` for HTTP/network semantics,
++    but treats :class:`TimeoutError` (a subclass of :class:`OSError`) as **retryable**,
++    matching typical LLM client timeout behavior.
++
++    Optional ``openai`` SDK errors are included when that package is installed.
++    """
++
++    if not isinstance(exc, Exception):
++        return False
++
++    # ``default_retry_on`` classifies ``TimeoutError`` as non-retryable only because
++    # it subclasses ``OSError``; for LLM calls we want the opposite.
++    if isinstance(exc, TimeoutError):
++        return True
++
++    from langgraph.types import default_retry_on
++
++    if default_retry_on(exc):
++        return True
++
++    try:
++        from openai import APIConnectionError, APITimeoutError, RateLimitError
++    except ImportError:
++        return False
++
++    return isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError))
++
++
++__all__ = ["is_transient_classification_error"]
+diff --git a/src/sentinel_prism/services/llm/settings.py b/src/sentinel_prism/services/llm/settings.py
+index 79f816e..88419b0 100644
+--- a/src/sentinel_prism/services/llm/settings.py
++++ b/src/sentinel_prism/services/llm/settings.py
+@@ -4,9 +4,9 @@ from __future__ import annotations
+ 
+ import os
+ from dataclasses import dataclass
+-from functools import lru_cache
+ 
+ DEFAULT_PROMPT_VERSION = "mvp-1"
++DEFAULT_CLASSIFICATION_MAX_ATTEMPTS = 3
+ 
+ 
+ @dataclass(frozen=True)
+@@ -17,8 +17,13 @@ class ClassificationLlmSettings:
+     prompt_version: str
+ 
+ 
+-@lru_cache
+ def get_classification_llm_settings() -> ClassificationLlmSettings:
++    """Read env vars fresh on each call.
++
++    Intentionally not cached: environment overrides (including ``monkeypatch.setenv``
++    in tests) must take effect without a process restart.
++    """
++
+     return ClassificationLlmSettings(
+         model_id=os.getenv("SENTINEL_CLASSIFICATION_MODEL_ID", "stub").strip()
+         or "stub",
+@@ -28,3 +33,31 @@ def get_classification_llm_settings() -> ClassificationLlmSettings:
+             or DEFAULT_PROMPT_VERSION
+         ),
+     )
++
++
++@dataclass(frozen=True)
++class ClassificationRetrySettings:
++    """LangGraph :class:`~langgraph.types.RetryPolicy` knobs for ``classify`` (Story 3.6)."""
++
++    max_attempts: int
++    initial_interval: float = 0.5
++    backoff_factor: float = 2.0
++    max_interval: float = 128.0
++    jitter: bool = True
++
++
++def get_classification_retry_settings() -> ClassificationRetrySettings:
++    """Env-backed retry policy for the classify node (read fresh each call)."""
++
++    raw = os.getenv(
++        "SENTINEL_CLASSIFICATION_MAX_ATTEMPTS",
++        str(DEFAULT_CLASSIFICATION_MAX_ATTEMPTS),
++    ).strip() or str(DEFAULT_CLASSIFICATION_MAX_ATTEMPTS)
++    try:
++        n = int(raw)
++    except ValueError:
++        n = DEFAULT_CLASSIFICATION_MAX_ATTEMPTS
++    # Story AC: N >= 2; cap to avoid runaway invocations.
++    n = max(2, min(n, 10))
++
++    return ClassificationRetrySettings(max_attempts=n)
+diff --git a/tests/test_graph_retry_policy.py b/tests/test_graph_retry_policy.py
+new file mode 100644
+index 0000000..0662fff
+--- /dev/null
++++ b/tests/test_graph_retry_policy.py
+@@ -0,0 +1,187 @@
++"""LangGraph retry policy on classify (Story 3.6)."""
++
++from __future__ import annotations
++
++import logging
++import uuid
++from unittest.mock import patch
++
++import pytest
++
++from langgraph.checkpoint.memory import MemorySaver
++from langgraph.graph import END, START, StateGraph
++
++from sentinel_prism.graph.nodes.classify import node_classify
++from sentinel_prism.graph.retry import classify_node_retry_policy
++from sentinel_prism.graph.state import AgentState, new_pipeline_state
++from sentinel_prism.services.llm.classification import StructuredClassification
++from sentinel_prism.services.llm.classification_retry import is_transient_classification_error
++from sentinel_prism.services.llm.settings import ClassificationRetrySettings
++
++
++def _normalized_stub() -> dict:
++    return {
++        "source_id": str(uuid.uuid4()),
++        "item_url": "https://n/retry",
++        "jurisdiction": "EU",
++        "document_type": "unknown",
++        "title": "Label change",
++        "summary": None,
++        "body_snippet": None,
++    }
++
++
++def test_is_transient_classification_error_timeout_vs_runtime() -> None:
++    assert is_transient_classification_error(TimeoutError("x")) is True
++    assert is_transient_classification_error(ConnectionError("x")) is True
++    assert is_transient_classification_error(RuntimeError("provider down")) is False
++
++
++def _classify_only_graph(monkeypatch: pytest.MonkeyPatch) -> object:
++    monkeypatch.setattr(
++        "sentinel_prism.graph.retry.get_classification_retry_settings",
++        lambda: ClassificationRetrySettings(
++            max_attempts=2,
++            initial_interval=0.0,
++            backoff_factor=1.0,
++            max_interval=0.0,
++            jitter=False,
++        ),
++    )
++    builder: StateGraph = StateGraph(AgentState)
++    builder.add_node(
++        "classify",
++        node_classify,
++        retry_policy=classify_node_retry_policy(),
++    )
++    builder.add_edge(START, "classify")
++    builder.add_edge("classify", END)
++    return builder.compile(checkpointer=MemorySaver())
++
++
++@pytest.mark.asyncio
++async def test_classify_transient_retries_then_succeeds(
++    monkeypatch: pytest.MonkeyPatch,
++    caplog: pytest.LogCaptureFixture,
++) -> None:
++    caplog.set_level(logging.WARNING)
++    calls: list[int] = []
++
++    class Flaky:
++        model_id = "stub"
++
++        async def classify(self, *_a: object, **_k: object) -> StructuredClassification:
++            calls.append(1)
++            if len(calls) < 2:
++                raise ConnectionError("transient")
++            return StructuredClassification(
++                severity="medium",
++                impact_categories=["labeling"],
++                urgency="informational",
++                rationale="ok_after_retry",
++                confidence=0.85,
++            )
++
++    with patch(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        return_value=Flaky(),
++    ):
++        app = _classify_only_graph(monkeypatch)
++        rid = str(uuid.uuid4())
++        state = new_pipeline_state(rid)
++        state["normalized_updates"] = [_normalized_stub()]
++        result = await app.ainvoke(
++            state,
++            config={"configurable": {"thread_id": rid}},
++        )
++
++    assert result["run_id"] == rid
++    assert len(calls) == 2
++    assert len(result["classifications"]) == 1
++    assert result["classifications"][0]["rationale"] == "ok_after_retry"
++    transient_ev = [
++        r
++        for r in caplog.records
++        if getattr(r, "event", None) == "graph_classify_llm_transient"
++    ]
++    assert len(transient_ev) == 1
++    assert transient_ev[0].ctx["run_id"] == rid
++    assert transient_ev[0].ctx["step"] == "classify"
++
++
++@pytest.mark.asyncio
++async def test_classify_transient_exhausts_retry_policy(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    class AlwaysDown:
++        model_id = "stub"
++
++        async def classify(self, *_a: object, **_k: object) -> StructuredClassification:
++            raise ConnectionError("still down")
++
++    with patch(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        return_value=AlwaysDown(),
++    ):
++        app = _classify_only_graph(monkeypatch)
++        rid = str(uuid.uuid4())
++        state = new_pipeline_state(rid)
++        state["normalized_updates"] = [_normalized_stub()]
++        with pytest.raises(ConnectionError, match="still down"):
++            await app.ainvoke(
++                state,
++                config={"configurable": {"thread_id": rid}},
++            )
++
++
++@pytest.mark.asyncio
++async def test_full_pipeline_classify_retry_preserves_run_id(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """Regression: regulatory graph wiring keeps thread_id correlation (FR38)."""
++
++    monkeypatch.setattr(
++        "sentinel_prism.graph.retry.get_classification_retry_settings",
++        lambda: ClassificationRetrySettings(
++            max_attempts=2,
++            initial_interval=0.0,
++            backoff_factor=1.0,
++            max_interval=0.0,
++            jitter=False,
++        ),
++    )
++    from sentinel_prism.graph import compile_regulatory_pipeline_graph
++
++    calls: list[int] = []
++
++    class Flaky:
++        model_id = "stub"
++
++        async def classify(self, *_a: object, **_k: object) -> StructuredClassification:
++            calls.append(1)
++            if len(calls) < 2:
++                raise ConnectionError("transient")
++            return StructuredClassification(
++                severity="medium",
++                impact_categories=["labeling"],
++                urgency="informational",
++                rationale="ok",
++                confidence=0.85,
++            )
++
++    with patch(
++        "sentinel_prism.graph.nodes.classify.build_classification_llm",
++        return_value=Flaky(),
++    ):
++        app = compile_regulatory_pipeline_graph()
++        rid = str(uuid.uuid4())
++        state = new_pipeline_state(rid)
++        state["normalized_updates"] = [_normalized_stub()]
++        state["flags"] = {"needs_human_review": False}
++        result = await app.ainvoke(
++            state,
++            config={"configurable": {"thread_id": rid}},
++        )
++
++    assert result["run_id"] == rid
++    assert len(calls) == 2
+diff --git a/verify_imports.py b/verify_imports.py
+index bd261dc..b827913 100644
+--- a/verify_imports.py
++++ b/verify_imports.py
+@@ -19,8 +19,10 @@ def main() -> None:
+     import sentinel_prism.graph.nodes.human_review_gate  # noqa: F401
+     import sentinel_prism.graph.nodes.scout  # noqa: F401
+     import sentinel_prism.graph.nodes.normalize  # noqa: F401
++    import sentinel_prism.graph.retry  # noqa: F401
+     import sentinel_prism.graph.routing  # noqa: F401
+     import sentinel_prism.services.llm.classification  # noqa: F401
++    import sentinel_prism.services.llm.classification_retry  # noqa: F401
+     import sentinel_prism.services.llm.rules  # noqa: F401
+     import sentinel_prism.services.llm.settings  # noqa: F401
+ 

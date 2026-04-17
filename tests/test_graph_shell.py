@@ -93,8 +93,17 @@ async def test_compile_pipeline_round_trip_checkpoint() -> None:
     assert len(out["normalized_updates"]) == 1
     assert out["normalized_updates"][0]["title"] == "Hello"
     assert out["normalized_updates"][0]["source_name"] == "Test Source"
+    assert len(out["classifications"]) == 1
+    clf0 = out["classifications"][0]
+    assert clf0["in_scope"] is True
+    assert clf0["item_url"] == item.item_url
+    assert clf0["source_id"] == source_id
+    assert clf0["needs_human_review"] is False
+    assert clf0["severity"] == "medium"
+    assert clf0["confidence"] == pytest.approx(0.85)
     assert snap.values["run_id"] == run_id
     assert len(snap.values["normalized_updates"]) == 1
+    assert len(snap.values["classifications"]) == 1
 
 
 @pytest.mark.asyncio
@@ -150,10 +159,17 @@ async def test_pipeline_logs_run_id_on_scout_and_normalize(
     norm_done = [
         r for r in caplog.records if getattr(r, "event", None) == "graph_normalize_done"
     ]
+    clf_done = [
+        r for r in caplog.records if getattr(r, "event", None) == "graph_classify_llm_done"
+    ]
     assert len(scout_done) == 1
     assert scout_done[0].ctx["run_id"] == run_id
     assert len(norm_done) == 1
     assert norm_done[0].ctx["run_id"] == run_id
+    assert len(clf_done) == 1
+    assert clf_done[0].ctx["run_id"] == run_id
+    assert clf_done[0].ctx["model_id"] == "stub"
+    assert "prompt_version" in clf_done[0].ctx
 
 
 def test_new_pipeline_state_normalizes_uuid() -> None:

@@ -1,5 +1,5 @@
 # generated: 2026-04-12T12:00:00Z
-# last_updated: 2026-04-17T22:30:00Z
+# last_updated: 2026-04-17T23:59:30Z
 # project: Sentinel Prism
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-17T22:30:00Z"
+last_updated: "2026-04-17T23:59:30Z"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -63,9 +63,9 @@ development_status:
   3-1-persist-raw-captures-and-normalized-records: done
   3-2-define-agentstate-and-graph-compilation-shell: done
   3-3-implement-scout-and-normalize-nodes-wired-in-graph: done
-  3-4-classify-node-with-rules-llm-and-structured-output: backlog
-  3-5-conditional-edges-for-review-vs-continue: backlog
-  3-6-retry-policy-on-transient-node-failures: backlog
+  3-4-classify-node-with-rules-llm-and-structured-output: done
+  3-5-conditional-edges-for-review-vs-continue: done
+  3-6-retry-policy-on-transient-node-failures: done
   3-7-pluggable-web-search-tool-tavily-default: backlog
   3-8-pipeline-generated-audit-events: backlog
   epic-3-retrospective: optional

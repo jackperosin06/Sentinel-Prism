@@ -15,8 +15,16 @@ def main() -> None:
     import langgraph.checkpoint.memory  # noqa: F401
     import langgraph.graph  # noqa: F401
 
+    import sentinel_prism.graph.nodes.classify  # noqa: F401
+    import sentinel_prism.graph.nodes.human_review_gate  # noqa: F401
     import sentinel_prism.graph.nodes.scout  # noqa: F401
     import sentinel_prism.graph.nodes.normalize  # noqa: F401
+    import sentinel_prism.graph.retry  # noqa: F401
+    import sentinel_prism.graph.routing  # noqa: F401
+    import sentinel_prism.services.llm.classification  # noqa: F401
+    import sentinel_prism.services.llm.classification_retry  # noqa: F401
+    import sentinel_prism.services.llm.rules  # noqa: F401
+    import sentinel_prism.services.llm.settings  # noqa: F401
 
     print(
         "imports ok: langgraph, langgraph.graph, langgraph.checkpoint.memory, "
