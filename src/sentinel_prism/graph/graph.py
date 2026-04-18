@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from sentinel_prism.graph.checkpoints import dev_memory_checkpointer
+from sentinel_prism.graph.nodes.brief import node_brief
 from sentinel_prism.graph.nodes.classify import node_classify
 from sentinel_prism.graph.nodes.human_review_gate import node_human_review_gate
 from sentinel_prism.graph.nodes.normalize import node_normalize
@@ -36,6 +37,7 @@ def build_regulatory_pipeline_graph() -> StateGraph:
         retry_policy=classify_node_retry_policy(),
     )
     builder.add_node("human_review_gate", node_human_review_gate)
+    builder.add_node("brief", node_brief)
     builder.add_edge(START, "scout")
     builder.add_edge("scout", "normalize")
     builder.add_edge("normalize", "classify")
@@ -44,10 +46,11 @@ def build_regulatory_pipeline_graph() -> StateGraph:
         route_after_classify,
         {
             CLASSIFY_NEXT_HUMAN_REVIEW: "human_review_gate",
-            CLASSIFY_NEXT_CONTINUE: END,
+            CLASSIFY_NEXT_CONTINUE: "brief",
         },
     )
-    builder.add_edge("human_review_gate", END)
+    builder.add_edge("human_review_gate", "brief")
+    builder.add_edge("brief", END)
     return builder
 
 

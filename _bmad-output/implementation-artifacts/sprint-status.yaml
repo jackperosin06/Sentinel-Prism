@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-18T21:30:00Z"
+last_updated: "2026-04-18T20:00:00Z"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -70,10 +70,10 @@ development_status:
   3-8-pipeline-generated-audit-events: done
   epic-3-retrospective: optional
 
-  epic-4: in-progress
-  4-1-review-queue-api-and-workflow-state-integration: review
+  epic-4: done
+  4-1-review-queue-api-and-workflow-state-integration: done
   4-2-approve-reject-override-with-notes: done
-  4-3-briefing-generation-and-grouping: backlog
+  4-3-briefing-generation-and-grouping: done
   epic-4-retrospective: optional
 
   epic-5: backlog

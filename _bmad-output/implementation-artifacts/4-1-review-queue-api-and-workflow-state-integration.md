@@ -1,6 +1,6 @@
 # Story 4.1: Review queue API and workflow state integration
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -251,11 +251,12 @@ Composer (Cursor agent)
 ## Change Log
 
 - 2026-04-19 — Story 4.1 implemented: review queue API, Postgres LangGraph checkpointer wiring, **`review_queue_items`**, audit read helper, tests (status → **review**).  
+- 2026-04-18 — Story 4.1 marked **done** in sprint tracking (implementation + prior code review complete; Epic 4 triage APIs aligned with AC).
 
 ## Story completion status
 
-- **Status:** review  
-- **Note:** Implementation complete; full pytest suite green (157 passed, 10 skipped).  
+- **Status:** done  
+- **Note:** Implementation complete; code review deferred items tracked in `deferred-work.md`; full pytest suite green at time of closure.  
 
 ### Saved questions / clarifications (non-blocking)
 

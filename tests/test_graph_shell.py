@@ -101,6 +101,8 @@ async def test_compile_pipeline_round_trip_checkpoint() -> None:
     assert clf0["needs_human_review"] is False
     assert clf0["severity"] == "medium"
     assert clf0["confidence"] == pytest.approx(0.85)
+    assert out.get("briefings")
+    assert int(out["briefings"][0].get("group_count", 0)) >= 1
     assert snap.values["run_id"] == run_id
     assert len(snap.values["normalized_updates"]) == 1
     assert len(snap.values["classifications"]) == 1

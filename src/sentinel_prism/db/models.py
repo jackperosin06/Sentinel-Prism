@@ -63,6 +63,7 @@ class PipelineAuditAction(StrEnum):
     HUMAN_REVIEW_APPROVED = "human_review_approved"
     HUMAN_REVIEW_REJECTED = "human_review_rejected"
     HUMAN_REVIEW_OVERRIDDEN = "human_review_overridden"
+    BRIEFING_GENERATED = "briefing_generated"
 
 
 class Base(DeclarativeBase):
@@ -333,6 +334,39 @@ class ReviewQueueItem(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     items_summary: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB(none_as_null=True), nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+
+class Briefing(Base):
+    """Persisted regulatory briefing for a pipeline run (Story 4.3 — FR18–FR20).
+
+    At most one row per ``run_id`` (upserted from ``node_brief``) so LangGraph
+    retries or duplicate tail execution do not multiply briefings.
+    """
+
+    __tablename__ = "briefings"
+    __table_args__ = (
+        Index("ix_briefings_created_at", "created_at"),
+        UniqueConstraint("run_id", name="uq_briefings_run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    grouping_dimensions: Mapped[list[str]] = mapped_column(
+        JSONB(none_as_null=True), nullable=False, server_default=text("'[]'::jsonb")
+    )
+    groups: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB(none_as_null=True), nullable=False, server_default=text("'[]'::jsonb")
     )
 

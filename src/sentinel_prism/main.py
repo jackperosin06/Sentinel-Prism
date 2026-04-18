@@ -9,7 +9,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 
-from sentinel_prism.api.routes import auth, health, runs, sources
+from sentinel_prism.api.routes import auth, briefings, health, runs, sources
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(sources.router)
     app.include_router(runs.router)
     app.include_router(runs.review_queue_router)
+    app.include_router(briefings.router)
     return app
 
 

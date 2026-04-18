@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from sentinel_prism.db.models import (
     AuditEvent,
+    Briefing,
     FallbackMode,
     PipelineAuditAction,
     Source,
@@ -597,6 +598,7 @@ async def test_regulatory_graph_writes_audit_events_when_db_available() -> None:
                 PipelineAuditAction.PIPELINE_SCOUT_COMPLETED,
                 PipelineAuditAction.PIPELINE_NORMALIZE_COMPLETED,
                 PipelineAuditAction.PIPELINE_CLASSIFY_COMPLETED,
+                PipelineAuditAction.BRIEFING_GENERATED,
             ):
                 n = await session.scalar(
                     select(func.count())
@@ -610,6 +612,9 @@ async def test_regulatory_graph_writes_audit_events_when_db_available() -> None:
         # Clean up the rows we inserted so the shared integration DB does not
         # accumulate pollution across runs.
         async with factory() as cleanup_sess:
+            await cleanup_sess.execute(
+                delete(Briefing).where(Briefing.run_id == run_uuid)
+            )
             await cleanup_sess.execute(
                 delete(AuditEvent).where(AuditEvent.run_id == run_uuid)
             )

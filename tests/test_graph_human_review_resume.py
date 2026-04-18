@@ -125,6 +125,9 @@ async def test_resume_approve_clears_needs_human_review(
     cls_rows = snap.values.get("classifications") or []
     assert cls_rows
     assert all(not r.get("needs_human_review") for r in cls_rows if isinstance(r, dict))
+    br = snap.values.get("briefings") or []
+    assert isinstance(br, list) and len(br) == 1
+    assert int(br[0].get("group_count", 0)) >= 1
 
 
 @pytest.mark.asyncio
@@ -215,6 +218,7 @@ async def test_resume_reject_marks_out_of_scope(
     assert row0.get("in_scope") is False
     assert row0.get("rationale") == "analyst_rejected"
     assert snap.values.get("flags", {}).get("needs_human_review") is False
+    assert not (snap.values.get("briefings") or [])
 
 
 @pytest.mark.asyncio
@@ -310,3 +314,6 @@ async def test_resume_override_updates_severity(
     assert cls_rows[0].get("confidence") == 0.92
     assert cls_rows[0].get("needs_human_review") is False
     assert snap.values.get("flags", {}).get("needs_human_review") is False
+    br = snap.values.get("briefings") or []
+    assert isinstance(br, list) and len(br) == 1
+    assert int(br[0].get("group_count", 0)) >= 1

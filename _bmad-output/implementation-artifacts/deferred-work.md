@@ -171,3 +171,8 @@
 - **`classifications` assertions in `tests/test_graph_scout_normalize.py` and `tests/test_graph_shell.py` are shape-only:** Length + truthiness checks; no `in_scope` / `severity` semantics. Tighten when Story 3.5 adds conditional edges.
 - **System prompt has no few-shot examples or severity/urgency rubric:** Output quality will drift across models. Prompt-engineering + eval harness post-MVP.
 - **Ambiguous `needs_human_review` boundary at `confidence == 0.5`:** Current rule is `< 0.5` so exactly 0.5 is not flagged. Revisit with policy tuning once real model scores are observed.
+
+## Deferred from: code review of 4-3-briefing-generation-and-grouping (2026-04-18)
+
+- **Brief API and node tests are happy-path with fully mocked repository layer:** `tests/test_briefings_api.py` monkeypatches `list_briefings` / `get_briefing_by_id`, and `tests/test_graph_brief.py` patches `upsert_briefing_for_run`. No coverage for pagination bounds, non-UUID `briefing_id` path params, malformed JSONB in `groups`, the real upsert race, `created_at`-desc ordering contract, or role separation beyond VIEWER. Spec AC7 was satisfied — deeper integration coverage pairs with the upsert-race and error-handling patches from this review.
+- **`BRIEFING_GENERATED` audit event is re-emitted on any second `node_brief` execution:** `record_pipeline_audit_event` unconditionally appends a row; no "already emitted for this run" guard. Consistent with scout / normalize / classify audit patterns, which also lack such guards. Defer to a cross-cutting audit idempotency story rather than fixing only the brief node.

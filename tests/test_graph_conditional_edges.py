@@ -155,6 +155,9 @@ async def test_pipeline_continue_path_no_interrupt(
     flags = out.get("flags") or {}
     assert flags.get("needs_human_review", False) is False
     assert out["classifications"][0]["needs_human_review"] is False
+    assert out.get("briefings")
+    assert isinstance(out["briefings"], list)
+    assert int(out["briefings"][0].get("group_count", 0)) >= 1
 
 
 @pytest.mark.asyncio
