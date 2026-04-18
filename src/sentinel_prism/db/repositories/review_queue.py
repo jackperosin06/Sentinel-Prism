@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -44,10 +44,12 @@ async def upsert_pending(
     if queued_at is not None:
         values["queued_at"] = queued_at
     base = insert(ReviewQueueItem).values(**values)
+    # On conflict, refresh triage JSON only — preserve the original ``queued_at``
+    # so LangGraph's re-execution of ``human_review_gate`` on resume does not
+    # bump the interrupt timestamp (Story 4.2).
     update_set: dict[str, Any] = {
         "source_id": base.excluded.source_id,
         "items_summary": base.excluded.items_summary,
-        "queued_at": base.excluded.queued_at if queued_at is not None else func.now(),
     }
     stmt = base.on_conflict_do_update(
         index_elements=["run_id"],
@@ -73,6 +75,30 @@ async def list_pending_review_items(
         .offset(off)
     )
     return list(res.all())
+
+
+async def delete_pending_by_run_id(
+    session: AsyncSession,
+    *,
+    run_id: str | UUID,
+) -> bool:
+    """Remove the queue projection row for ``run_id`` after a successful resume.
+
+    Raises ``ValueError`` on a malformed ``run_id`` string — callers should
+    parse / validate before calling (the route typed arg already guarantees a
+    ``UUID``). Returning ``False`` would conflate "row not found" with "bad
+    input", hiding caller bugs in operator logs.
+    """
+
+    if isinstance(run_id, UUID):
+        rid = run_id
+    else:
+        rid = uuid.UUID(str(run_id).strip())
+    row = await session.get(ReviewQueueItem, rid)
+    if row is None:
+        return False
+    await session.delete(row)
+    return True
 
 
 async def get_pending_by_run_id(

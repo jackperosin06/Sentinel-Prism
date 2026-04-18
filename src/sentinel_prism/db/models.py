@@ -59,6 +59,10 @@ class PipelineAuditAction(StrEnum):
     # interrupted run is still discoverable via audit search even when the
     # dedicated projection row could not be written.
     HUMAN_REVIEW_QUEUE_PROJECTION_FAILED = "human_review_queue_projection_failed"
+    # Story 4.2 — analyst decisions (FR17); distinct actions for Epic 8 search.
+    HUMAN_REVIEW_APPROVED = "human_review_approved"
+    HUMAN_REVIEW_REJECTED = "human_review_rejected"
+    HUMAN_REVIEW_OVERRIDDEN = "human_review_overridden"
 
 
 class Base(DeclarativeBase):

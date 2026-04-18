@@ -1,4 +1,4 @@
-"""Review queue and run detail API (Story 4.1)."""
+"""Review queue, run detail, and resume API (Stories 4.1–4.2)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from langgraph.types import Command
 
 from sentinel_prism.api.deps import get_current_user
 from sentinel_prism.db.models import FallbackMode, SourceType, User, UserRole
@@ -653,3 +654,284 @@ async def test_interrupt_projection_ends_up_listable_via_repo(
     assert [str(r.run_id) for r in listed] == [run_id]
     assert listed[0].source_id == uuid.UUID(source_id)
     assert listed[0].items_summary
+
+
+# ----------------------------------------------------------------------------
+# POST /runs/{run_id}/resume — Story 4.2
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_resume_run_unauthorized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with LifespanManager(app):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.post(
+                f"/runs/{uuid.uuid4()}/resume",
+                json={"decision": "approve", "note": ""},
+            )
+    assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_resume_run_viewer_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: _viewer_user()
+    transport = ASGITransport(app=app)
+    try:
+        async with LifespanManager(app):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                r = await client.post(
+                    f"/runs/{uuid.uuid4()}/resume",
+                    json={"decision": "approve", "note": ""},
+                )
+        assert r.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_run_not_in_queue_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
+
+    async def fake_analyst_session() -> None:
+        yield MagicMock()
+
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: _analyst_user()
+    app.dependency_overrides[session_get_db] = fake_analyst_session
+    monkeypatch.setattr(
+        "sentinel_prism.db.repositories.review_queue.get_pending_by_run_id",
+        AsyncMock(return_value=None),
+    )
+    transport = ASGITransport(app=app)
+    try:
+        async with LifespanManager(app):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                r = await client.post(
+                    f"/runs/{uuid.uuid4()}/resume",
+                    json={"decision": "approve", "note": ""},
+                )
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_run_not_interrupted_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
+
+    async def fake_analyst_session() -> None:
+        yield MagicMock()
+
+    run_id = uuid.uuid4()
+    pending_row = SimpleNamespace(
+        run_id=run_id,
+        source_id=uuid.uuid4(),
+        queued_at=datetime.now(timezone.utc),
+        items_summary=[],
+    )
+    snap = SimpleNamespace(
+        values={"run_id": str(run_id), "flags": {}},
+        interrupts=(),
+    )
+    graph_mock = MagicMock()
+    graph_mock.aget_state = AsyncMock(return_value=snap)
+
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: _analyst_user()
+    app.dependency_overrides[session_get_db] = fake_analyst_session
+    monkeypatch.setattr(
+        "sentinel_prism.db.repositories.review_queue.get_pending_by_run_id",
+        AsyncMock(return_value=pending_row),
+    )
+    transport = ASGITransport(app=app)
+    try:
+        async with LifespanManager(app):
+            app.state.regulatory_graph = graph_mock
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                r = await client.post(
+                    f"/runs/{run_id}/resume",
+                    json={"decision": "approve", "note": ""},
+                )
+        assert r.status_code == 404
+        assert "waiting" in r.json()["detail"].lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_run_override_ok(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
+
+    analyst = _analyst_user()
+    session_mock = MagicMock()
+    session_mock.commit = AsyncMock()
+
+    async def fake_analyst_session() -> None:
+        yield session_mock
+
+    run_id = uuid.uuid4()
+    src = uuid.uuid4()
+    pending_row = SimpleNamespace(
+        run_id=run_id,
+        source_id=src,
+        queued_at=datetime.now(timezone.utc),
+        items_summary=[],
+    )
+    snap_pre = SimpleNamespace(
+        values={
+            "run_id": str(run_id),
+            "flags": {"needs_human_review": True},
+            "classifications": [
+                {
+                    "item_url": "https://ex/item",
+                    "in_scope": True,
+                    "severity": "high",
+                    "urgency": "immediate",
+                    "confidence": 0.3,
+                    "rationale": "model uncertain",
+                    "impact_categories": ["labeling"],
+                    "needs_human_review": True,
+                }
+            ],
+        },
+        interrupts=(SimpleNamespace(),),
+    )
+    snap_post = SimpleNamespace(
+        values={"run_id": str(run_id), "flags": {"needs_human_review": False}},
+        interrupts=(),
+    )
+    graph_mock = MagicMock()
+    graph_mock.aget_state = AsyncMock(side_effect=[snap_pre, snap_post])
+    graph_mock.ainvoke = AsyncMock(return_value={})
+
+    append_mock = AsyncMock(return_value=uuid.uuid4())
+    delete_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "sentinel_prism.api.routes.runs.audit_events_repo.append_audit_event",
+        append_mock,
+    )
+    monkeypatch.setattr(
+        "sentinel_prism.db.repositories.review_queue.delete_pending_by_run_id",
+        delete_mock,
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: analyst
+    app.dependency_overrides[session_get_db] = fake_analyst_session
+    monkeypatch.setattr(
+        "sentinel_prism.db.repositories.review_queue.get_pending_by_run_id",
+        AsyncMock(return_value=pending_row),
+    )
+    transport = ASGITransport(app=app)
+    try:
+        async with LifespanManager(app):
+            app.state.regulatory_graph = graph_mock
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                r = await client.post(
+                    f"/runs/{run_id}/resume",
+                    json={
+                        "decision": "override",
+                        "note": "severity too high",
+                        "overrides": [
+                            {
+                                "severity": "low",
+                                "confidence": 0.95,
+                                "item_url": "https://ex/item",
+                            }
+                        ],
+                    },
+                )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["run_id"] == str(run_id)
+        assert body["decision"] == "override"
+        assert body["status"] == "completed"
+
+        graph_mock.ainvoke.assert_awaited_once()
+        cmd = graph_mock.ainvoke.await_args.args[0]
+        assert isinstance(cmd, Command)
+        assert cmd.resume["decision"] == "override"
+        assert cmd.resume["note"] == "severity too high"
+        assert cmd.resume["overrides"][0]["severity"] == "low"
+
+        append_mock.assert_awaited_once()
+        call_kw = append_mock.await_args.kwargs
+        assert call_kw["actor_user_id"] == analyst.id
+        assert call_kw["source_id"] == src
+        # AC #3 — note + decision persisted in audit metadata; override path
+        # additionally records a field-level patch summary (Story 4.2 code
+        # review — resolved decision-needed D2).
+        audit_meta = call_kw["metadata"]
+        assert audit_meta["decision"] == "override"
+        assert audit_meta["note"] == "severity too high"
+        assert "override_patches" in audit_meta
+        patches_meta = audit_meta["override_patches"]
+        assert isinstance(patches_meta, list) and len(patches_meta) == 1
+        assert patches_meta[0]["severity"] == "low"
+        assert patches_meta[0]["confidence"] == 0.95
+        assert patches_meta[0]["item_url"] == "https://ex/item"
+        delete_mock.assert_awaited_once()
+        session_mock.commit.assert_awaited_once()
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_resume_run_override_requires_note_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
+    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
+
+    async def fake_analyst_session() -> None:
+        yield MagicMock()
+
+    run_id = uuid.uuid4()
+    pending_row = SimpleNamespace(
+        run_id=run_id,
+        source_id=None,
+        queued_at=datetime.now(timezone.utc),
+        items_summary=[],
+    )
+    app = create_app()
+    app.dependency_overrides[get_current_user] = lambda: _analyst_user()
+    app.dependency_overrides[session_get_db] = fake_analyst_session
+    monkeypatch.setattr(
+        "sentinel_prism.db.repositories.review_queue.get_pending_by_run_id",
+        AsyncMock(return_value=pending_row),
+    )
+    transport = ASGITransport(app=app)
+    try:
+        async with LifespanManager(app):
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                r = await client.post(
+                    f"/runs/{run_id}/resume",
+                    json={
+                        "decision": "override",
+                        "note": "",
+                        "overrides": [{"severity": "low"}],
+                    },
+                )
+        assert r.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
