@@ -57,7 +57,11 @@ class StructuredClassification(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
-def format_classification_user_message(normalized: dict[str, Any]) -> str:
+def format_classification_user_message(
+    normalized: dict[str, Any],
+    *,
+    web_context: str | None = None,
+) -> str:
     lines = [
         f"item_url: {normalized.get('item_url', '')}",
         f"jurisdiction: {normalized.get('jurisdiction', '')}",
@@ -66,7 +70,11 @@ def format_classification_user_message(normalized: dict[str, Any]) -> str:
         f"summary: {normalized.get('summary', '')}",
         f"body_snippet: {normalized.get('body_snippet', '')}",
     ]
-    return "\n".join(lines)
+    base = "\n".join(lines)
+    extra = (web_context or "").strip()
+    if extra:
+        return f"{base}\n\n{extra}"
+    return base
 
 
 def classification_dict_for_state(
@@ -161,6 +169,7 @@ class ClassificationLLM(Protocol):
         *,
         model_id: str,
         prompt_version: str,
+        web_context: str | None = None,
     ) -> StructuredClassification: ...
 
 
@@ -176,8 +185,9 @@ class StubClassificationLLM:
         *,
         model_id: str,
         prompt_version: str,
+        web_context: str | None = None,
     ) -> StructuredClassification:
-        _ = normalized, model_id, prompt_version
+        _ = normalized, model_id, prompt_version, web_context
         return StructuredClassification(
             severity="medium",
             impact_categories=["labeling"],
@@ -205,11 +215,16 @@ class LangChainStructuredClassificationLlm:
         *,
         model_id: str,
         prompt_version: str,
+        web_context: str | None = None,
     ) -> StructuredClassification:
         _ = model_id, prompt_version
         messages = [
             SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
-            HumanMessage(content=format_classification_user_message(normalized)),
+            HumanMessage(
+                content=format_classification_user_message(
+                    normalized, web_context=web_context
+                )
+            ),
         ]
         out = await self._chain.ainvoke(messages)
         if isinstance(out, StructuredClassification):

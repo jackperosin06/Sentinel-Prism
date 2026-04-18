@@ -7,10 +7,16 @@ idempotent or coordinate with Epic 4 resume semantics.
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from langgraph.types import interrupt
 
+from sentinel_prism.graph.pipeline_review import (
+    classification_summaries_for_queue,
+    record_review_queue_projection,
+)
 from sentinel_prism.graph.state import AgentState
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,31 @@ async def node_human_review_gate(state: AgentState) -> dict[str, Any]:
             "event": "graph_human_review_gate_interrupt",
             "ctx": ctx,
         },
+    )
+
+    raw_cls = state.get("classifications")
+    cls_dicts: list[dict[str, Any]] = (
+        [x for x in raw_cls if isinstance(x, dict)]
+        if isinstance(raw_cls, list)
+        else []
+    )
+    summaries = classification_summaries_for_queue(cls_dicts)
+    src_uuid: uuid.UUID | None = None
+    if sid is not None:
+        try:
+            src_uuid = uuid.UUID(str(sid).strip())
+        except (ValueError, TypeError, AttributeError):
+            src_uuid = None
+    # AC #1 — "queued / interrupted timestamp (from durable workflow metadata)".
+    # Capture the timestamp *immediately before* ``interrupt()`` fires so the
+    # projection's ``queued_at`` reflects the workflow's interrupted moment
+    # rather than the DB clock at upsert time.
+    interrupted_at = datetime.now(tz=timezone.utc)
+    await record_review_queue_projection(
+        run_id=str(run_id),
+        source_id=src_uuid,
+        items_summary=summaries,
+        queued_at=interrupted_at,
     )
 
     payload: dict[str, Any] = {

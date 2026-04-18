@@ -15,12 +15,18 @@ def main() -> None:
     import langgraph.checkpoint.memory  # noqa: F401
     import langgraph.graph  # noqa: F401
 
+    import sentinel_prism.db.repositories.audit_events  # noqa: F401
     import sentinel_prism.graph.nodes.classify  # noqa: F401
     import sentinel_prism.graph.nodes.human_review_gate  # noqa: F401
     import sentinel_prism.graph.nodes.scout  # noqa: F401
     import sentinel_prism.graph.nodes.normalize  # noqa: F401
+    import sentinel_prism.api.routes.runs  # noqa: F401
+    import sentinel_prism.graph.pipeline_audit  # noqa: F401
+    import sentinel_prism.graph.pipeline_review  # noqa: F401
     import sentinel_prism.graph.retry  # noqa: F401
     import sentinel_prism.graph.routing  # noqa: F401
+    import sentinel_prism.graph.tools.factory  # noqa: F401
+    import sentinel_prism.services.search.settings  # noqa: F401
     import sentinel_prism.services.llm.classification  # noqa: F401
     import sentinel_prism.services.llm.classification_retry  # noqa: F401
     import sentinel_prism.services.llm.rules  # noqa: F401

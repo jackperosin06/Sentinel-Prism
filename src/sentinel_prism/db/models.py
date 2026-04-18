@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -45,6 +47,18 @@ class FallbackMode(StrEnum):
     NONE = "none"
     SAME_AS_PRIMARY = "same_as_primary"
     HTML_PAGE = "html_page"
+
+
+class PipelineAuditAction(StrEnum):
+    """Append-only pipeline audit vocabulary (Story 3.8 — FR33 partial)."""
+
+    PIPELINE_SCOUT_COMPLETED = "pipeline_scout_completed"
+    PIPELINE_NORMALIZE_COMPLETED = "pipeline_normalize_completed"
+    PIPELINE_CLASSIFY_COMPLETED = "pipeline_classify_completed"
+    # Story 4.1 — emitted when `record_review_queue_projection` fails so the
+    # interrupted run is still discoverable via audit search even when the
+    # dedicated projection row could not be written.
+    HUMAN_REVIEW_QUEUE_PROJECTION_FAILED = "human_review_queue_projection_failed"
 
 
 class Base(DeclarativeBase):
@@ -289,4 +303,80 @@ class NormalizedUpdateRow(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ReviewQueueItem(Base):
+    """Durable projection of runs waiting at ``human_review_gate`` (Story 4.1).
+
+    Upserted immediately before LangGraph ``interrupt()`` so analysts can list
+    the queue via SQL. Checkpoint state remains the source of truth for full
+    ``AgentState``; Story 4.2 removes or updates rows when the graph resumes.
+    """
+
+    __tablename__ = "review_queue_items"
+    __table_args__ = (Index("ix_review_queue_items_queued_at", "queued_at"),)
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, nullable=False
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    queued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    items_summary: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB(none_as_null=True), nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+
+class AuditEvent(Base):
+    """Operator-queryable pipeline audit row (Story 3.8 — Architecture §3.5).
+
+    Append-only in application code: INSERT via
+    :func:`~sentinel_prism.db.repositories.audit_events.append_audit_event` only;
+    no ORM update/delete helpers. ``metadata`` must stay non-secret (counts,
+    flags, bounded samples) — never raw captures, prompts, or credentials (NFR12).
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        Index("ix_audit_events_run_id_created_at", "run_id", "created_at"),
+        Index("ix_audit_events_action", "action"),
+        Index("ix_audit_events_source_id", "source_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    action: Mapped[PipelineAuditAction] = mapped_column(
+        Enum(
+            PipelineAuditAction,
+            native_enum=False,
+            length=64,
+            values_callable=_str_enum_values,
+        ),
+        nullable=False,
+    )
+    source_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sources.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_metadata: Mapped[dict | None] = mapped_column(
+        "metadata",
+        JSONB(none_as_null=True),
+        nullable=True,
     )

@@ -1,15 +1,27 @@
 """FastAPI application entrypoint."""
 
-from contextlib import asynccontextmanager
+from __future__ import annotations
+
+import logging
+import os
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
 
-from sentinel_prism.api.routes import auth, health, sources
+from sentinel_prism.api.routes import auth, health, runs, sources
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    from sentinel_prism.graph import compile_regulatory_pipeline_graph
+    from sentinel_prism.graph.checkpoints import (
+        dev_memory_checkpointer,
+        postgres_uri_for_langgraph,
+        use_postgres_pipeline_checkpointer,
+    )
     from sentinel_prism.services.auth.providers.factory import get_auth_provider
     from sentinel_prism.services.auth.tokens import _algorithm, _secret
     from sentinel_prism.workers.poll_scheduler import get_poll_scheduler
@@ -17,13 +29,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _secret()
     _algorithm()
     get_auth_provider()  # fail-fast: raises ValueError for unknown AUTH_PROVIDER at startup
-    sched = get_poll_scheduler()
-    scheduler_started = await sched.start()
-    try:
+
+    # An ``AsyncExitStack`` guarantees that every resource acquired during
+    # startup is torn down during shutdown, even if a later startup step
+    # raises before the ``yield`` is reached. Previously the checkpointer
+    # context would leak when e.g. ``compile_regulatory_pipeline_graph`` or
+    # ``sched.start`` raised after ``checkpointer_cm.__aenter__``.
+    async with AsyncExitStack() as stack:
+        if use_postgres_pipeline_checkpointer():
+            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+            db_url = os.environ.get("DATABASE_URL", "").strip()
+            if not db_url:
+                raise RuntimeError(
+                    "Postgres pipeline checkpointer selected but DATABASE_URL is empty"
+                )
+            uri = postgres_uri_for_langgraph(db_url)
+            checkpointer_cm = AsyncPostgresSaver.from_conn_string(uri)
+            pipeline_checkpointer = await stack.enter_async_context(checkpointer_cm)
+            await pipeline_checkpointer.setup()
+        else:
+            pipeline_checkpointer = dev_memory_checkpointer()
+
+        app.state.regulatory_graph = compile_regulatory_pipeline_graph(
+            checkpointer=pipeline_checkpointer
+        )
+
+        sched = get_poll_scheduler()
+        scheduler_started = await sched.start()
+
+        async def _shutdown_scheduler() -> None:
+            if not scheduler_started:
+                return
+            try:
+                await sched.shutdown()
+            except Exception:
+                # Swallow scheduler-shutdown failures so the exit stack still
+                # runs the checkpointer's ``__aexit__`` and we do not leak a
+                # Postgres connection.
+                logger.exception("poll_scheduler shutdown raised during lifespan exit")
+
+        stack.push_async_callback(_shutdown_scheduler)
+
         yield
-    finally:
-        if scheduler_started:
-            await sched.shutdown()
 
 
 def create_app() -> FastAPI:
@@ -31,6 +79,8 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(sources.router)
+    app.include_router(runs.router)
+    app.include_router(runs.review_queue_router)
     return app
 
 

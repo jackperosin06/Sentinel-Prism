@@ -7,10 +7,12 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sentinel_prism.db.models import SourceType
+from sentinel_prism.db.models import PipelineAuditAction, SourceType
 from sentinel_prism.db.repositories import captures as captures_repo
 from sentinel_prism.db.repositories import sources as sources_repo
+from sentinel_prism.db.repositories.audit_events import ITEM_URL_SAMPLES_CAP
 from sentinel_prism.db.session import get_session_factory
+from sentinel_prism.graph.pipeline_audit import record_pipeline_audit_event
 from sentinel_prism.graph.state import AgentState
 from sentinel_prism.services.connectors.errors import ConnectorFetchFailed
 from sentinel_prism.services.connectors.scout_fetch import (
@@ -269,4 +271,28 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             },
         },
     )
-    return {"raw_items": raw_payloads}
+    samples: list[str] = []
+    for p in raw_payloads[:ITEM_URL_SAMPLES_CAP]:
+        if isinstance(p, dict):
+            u = p.get("item_url")
+            if isinstance(u, str) and u.strip():
+                samples.append(u.strip())
+        if len(samples) >= ITEM_URL_SAMPLES_CAP:
+            break
+    meta: dict[str, Any] = {
+        "raw_item_count": len(raw_payloads),
+        "trigger": trigger,
+        "fetch_outcome": outcome,
+    }
+    if samples:
+        meta["item_url_samples"] = samples
+    audit_errs = await record_pipeline_audit_event(
+        run_id=str(run_id),
+        action=PipelineAuditAction.PIPELINE_SCOUT_COMPLETED,
+        source_id=source_uuid,
+        metadata=meta,
+    )
+    out: dict[str, Any] = {"raw_items": raw_payloads}
+    if audit_errs:
+        out["errors"] = audit_errs
+    return out

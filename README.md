@@ -105,6 +105,15 @@ When **`DATABASE_URL`** is set, the API process runs an **in-process** scheduler
 
 Run **`alembic upgrade head`** so the `sources` table exists before using these endpoints.
 
+### Human review queue (Story 4.1)
+
+**Analyst / admin only.** The pipeline pauses at the human-review gate when classification confidence is low; interrupted runs are listable via the review-queue API and resumable later (Story 4.2).
+
+- `GET /review-queue` — newest-first list of runs awaiting review. Optional `limit` (1–200, default 50) and `offset` pagination query params.
+- `GET /runs/{run_id}` — typed projection of the LangGraph checkpoint (flags, classifications, normalized updates, allowlisted errors and llm_trace) plus a bounded audit tail. **404** if the run is not in the queue or has no checkpoint state.
+
+**LangGraph checkpointer.** Set **`PIPELINE_CHECKPOINTER=postgres`** (or leave unset with a non-empty **`DATABASE_URL`**) to use `AsyncPostgresSaver`. On startup the FastAPI lifespan calls `await saver.setup()`, which **creates LangGraph's checkpoint tables in `DATABASE_URL`** the first time the app boots — these tables are **not tracked by Alembic** and live alongside the Alembic-managed schema. In local dev you can set **`PIPELINE_CHECKPOINTER=memory`** to skip the DDL entirely (runs will not survive process restarts).
+
 ## Tests
 
 ```bash

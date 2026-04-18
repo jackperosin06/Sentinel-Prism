@@ -6,8 +6,10 @@ import logging
 import uuid
 from typing import Any
 
+from sentinel_prism.db.models import PipelineAuditAction
 from sentinel_prism.db.repositories import sources as sources_repo
 from sentinel_prism.db.session import get_session_factory
+from sentinel_prism.graph.pipeline_audit import record_pipeline_audit_event
 from sentinel_prism.graph.state import AgentState
 from sentinel_prism.services.connectors.scout_raw_item import scout_raw_item_from_payload
 from sentinel_prism.services.ingestion.normalize import (
@@ -58,7 +60,15 @@ async def node_normalize(state: AgentState) -> dict[str, Any]:
                 "ctx": {"run_id": run_id, "source_id": str(source_uuid)},
             },
         )
-        return {}
+        # AC #3: empty-but-successful completion still emits an audit row so
+        # Epic 8 forensics see every node completion, not only non-empty ones.
+        audit_errs = await record_pipeline_audit_event(
+            run_id=str(run_id),
+            action=PipelineAuditAction.PIPELINE_NORMALIZE_COMPLETED,
+            source_id=source_uuid,
+            metadata={"normalized_count": 0},
+        )
+        return {"errors": audit_errs} if audit_errs else {}
 
     try:
         factory = get_session_factory()
@@ -137,7 +147,14 @@ async def node_normalize(state: AgentState) -> dict[str, Any]:
             },
         },
     )
+    audit_errs = await record_pipeline_audit_event(
+        run_id=str(run_id),
+        action=PipelineAuditAction.PIPELINE_NORMALIZE_COMPLETED,
+        source_id=source_uuid,
+        metadata={"normalized_count": len(norms)},
+    )
     out: dict[str, Any] = {"normalized_updates": norms}
-    if err_accum:
-        out["errors"] = err_accum
+    errs = list(err_accum) + list(audit_errs)
+    if errs:
+        out["errors"] = errs
     return out
