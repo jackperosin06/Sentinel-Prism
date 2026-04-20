@@ -10,7 +10,15 @@ from typing import AsyncGenerator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from sentinel_prism.api.routes import auth, briefings, health, notifications, runs, sources
+from sentinel_prism.api.routes import (
+    auth,
+    briefings,
+    delivery_attempts,
+    health,
+    notifications,
+    runs,
+    sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(runs.review_queue_router)
     app.include_router(briefings.router)
     app.include_router(notifications.router)
+    app.include_router(delivery_attempts.router)
     return app
 
 

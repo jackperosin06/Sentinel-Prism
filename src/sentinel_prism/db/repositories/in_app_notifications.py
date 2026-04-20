@@ -34,6 +34,28 @@ async def list_user_ids_for_team_slug(
     return list(result.all())
 
 
+async def list_active_users_for_team_slug(
+    session: AsyncSession, *, team_slug: str
+) -> list[tuple[uuid.UUID, str]]:
+    """Return ``(user_id, email)`` for active users matching ``team_slug`` (case-insensitive).
+
+    Used by external notification delivery (Story 5.3) alongside
+    :func:`list_user_ids_for_team_slug` so SMTP sends target the same members
+    as in-app rows without duplicating the membership predicate.
+    """
+
+    norm = team_slug.strip().lower()
+    if not norm:
+        return []
+    stmt = select(User.id, User.email).where(
+        User.is_active.is_(True),
+        User.team_slug.is_not(None),
+        func.lower(User.team_slug) == norm,
+    )
+    result = await session.execute(stmt)
+    return [(row[0], row[1]) for row in result.all()]
+
+
 async def insert_notification_ignore_conflict(
     session: AsyncSession,
     *,

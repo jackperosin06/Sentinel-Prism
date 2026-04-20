@@ -13,6 +13,7 @@ from sentinel_prism.db.repositories import audit_events as audit_events_repo
 from sentinel_prism.db.repositories import routing_rules as routing_rules_repo
 from sentinel_prism.db.session import get_session_factory
 from sentinel_prism.graph.state import AgentState
+from sentinel_prism.services.notifications.external import enqueue_external_for_decisions
 from sentinel_prism.services.notifications.in_app import enqueue_critical_in_app_for_decisions
 from sentinel_prism.services.routing.resolve import RoutingRuleView, resolve_routing_decision
 
@@ -192,6 +193,37 @@ async def node_route(state: AgentState) -> dict[str, Any]:
         )
         delivery_events_merge.extend(dev)
         errors.extend(enqueue_errors)
+        # AC #5 / code-review 2026-04-21 — the external dispatcher already
+        # catches per-decision exceptions, but a failure in its startup
+        # branches (session factory, settings load, top-level asyncio
+        # issues) must never abort ``node_route`` or drop the routing
+        # decisions already computed above. The broad try/except here is
+        # the final safety net so a DB blip or network-layer programmer
+        # error degrades gracefully into a structured ``errors[]`` entry.
+        try:
+            ext_dev, ext_err = await enqueue_external_for_decisions(
+                session_factory=get_session_factory(),
+                run_id=run_id,
+                decisions=decisions,
+            )
+            delivery_events_merge.extend(ext_dev)
+            errors.extend(ext_err)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "graph_route",
+                extra={
+                    "event": "external_notifications_failed",
+                    "ctx": {**ctx, "error_class": type(exc).__name__},
+                },
+            )
+            errors.append(
+                {
+                    "step": "external_notifications",
+                    "message": "external_notifications_unhandled",
+                    "error_class": type(exc).__name__,
+                    "detail": _safe_error_detail(exc),
+                }
+            )
         audit_extra = await _emit_routing_audit_if_needed(
             run_id=run_id,
             source_id=src_uuid,

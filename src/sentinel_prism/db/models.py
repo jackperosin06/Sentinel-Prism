@@ -50,6 +50,33 @@ class FallbackMode(StrEnum):
     HTML_PAGE = "html_page"
 
 
+class NotificationDeliveryChannel(StrEnum):
+    """External notification transport (Story 5.3 — FR25)."""
+
+    SMTP = "smtp"
+    SLACK_WEBHOOK = "slack_webhook"
+
+
+class NotificationDeliveryOutcome(StrEnum):
+    """Per-attempt result persisted for operators (Story 5.3 — FR23).
+
+    **Lifecycle:** ``pending`` is a transient state inserted by the
+    orchestrator *before* the external send fires so the idempotency key
+    ``(run_id, item_url, channel, recipient_descriptor)`` is claimed
+    atomically (unique constraint + ``ON CONFLICT DO NOTHING``). The row
+    is then updated to ``success`` or ``failure`` once the adapter
+    returns. ``skipped`` is reserved for intentional policy declines
+    (e.g., severity gate). A row stuck in ``pending`` indicates a crash
+    between the claim commit and the outcome update — admins can inspect
+    and replay.
+    """
+
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILURE = "failure"
+    SKIPPED = "skipped"
+
+
 class RoutingRuleType(StrEnum):
     """Mock routing rule discriminator (Story 5.1 — FR21)."""
 
@@ -409,6 +436,86 @@ class InAppNotification(Base):
     read_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class NotificationDeliveryAttempt(Base):
+    """One external send attempt (email or Slack webhook) with auditable outcome (Story 5.3).
+
+    **Idempotency:** ``(run_id, item_url, channel, recipient_descriptor)`` is
+    unique so graph retries do not duplicate sends. Orchestration inserts a
+    ``pending`` row first (``ON CONFLICT DO NOTHING``) to atomically claim
+    the key, sends externally, then UPDATEs the row to ``success`` /
+    ``failure``. A peer invocation racing on the same key lands on
+    ``rowcount == 0`` and skips without sending again.
+
+    **PII envelope (AC #6 carve-out):** ``recipient_descriptor`` holds the
+    lower-cased SMTP recipient email for the ``smtp`` channel, or a
+    scoped ``slack_webhook:<team_slug>`` token for Slack. AC #6 / NFR5
+    scopes operational payload content ("title, URL, severity, team
+    slug"), but delivery-log traceability for email-class channels
+    requires persisting the recipient address so an operator can audit
+    which mailbox actually received a sandbox send. Treat this column as
+    an explicit operational/audit carve-out from the "no end-user
+    personal data" envelope and do not project it into UI surfaces that
+    were designed for the wider AC #6 scope (notification body, briefing
+    content, routing audit metadata) without a matching carve-out.
+    """
+
+    __tablename__ = "notification_delivery_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "item_url",
+            "channel",
+            "recipient_descriptor",
+            name="uq_notification_delivery_attempts_idempotent",
+        ),
+        CheckConstraint(
+            "channel IN ('smtp', 'slack_webhook')",
+            name="ck_notification_delivery_attempts_channel",
+        ),
+        CheckConstraint(
+            "outcome IN ('pending', 'success', 'failure', 'skipped')",
+            name="ck_notification_delivery_attempts_outcome",
+        ),
+        Index("ix_notification_delivery_attempts_created_at", "created_at"),
+        Index(
+            "ix_notification_delivery_attempts_outcome_created",
+            "outcome",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    item_url: Mapped[str] = mapped_column(Text(), nullable=False)
+    channel: Mapped[NotificationDeliveryChannel] = mapped_column(
+        Enum(
+            NotificationDeliveryChannel,
+            native_enum=False,
+            length=32,
+            values_callable=_str_enum_values,
+        ),
+        nullable=False,
+    )
+    outcome: Mapped[NotificationDeliveryOutcome] = mapped_column(
+        Enum(
+            NotificationDeliveryOutcome,
+            native_enum=False,
+            length=16,
+            values_callable=_str_enum_values,
+        ),
+        nullable=False,
+    )
+    error_class: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    recipient_descriptor: Mapped[str] = mapped_column(String(320), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
