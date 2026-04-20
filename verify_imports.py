@@ -15,6 +15,7 @@ def main() -> None:
     import langgraph.checkpoint.memory  # noqa: F401
     import langgraph.graph  # noqa: F401
 
+    import sentinel_prism.compliance.outbound_allowlist  # noqa: F401
     import sentinel_prism.db.repositories.audit_events  # noqa: F401
     import sentinel_prism.graph.nodes.classify  # noqa: F401
     import sentinel_prism.graph.nodes.human_review_gate  # noqa: F401

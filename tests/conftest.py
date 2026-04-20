@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import pytest_asyncio
 
 # Tests that exercise graph nodes reaching the real audit + brief session
 # factories. Consolidated (Story 4.3 review finding) so the audit stub and
@@ -61,6 +62,42 @@ def _should_stub_graph_db(request: pytest.FixtureRequest) -> bool:
     if fspath is None:
         return False
     return Path(str(fspath)).name in _GRAPH_DB_STUBBED_MODULES
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_async_singletons_between_tests(
+    request: pytest.FixtureRequest,
+) -> None:
+    """Prevent cross-loop reuse of async singletons between unit tests.
+
+    pytest-asyncio runs tests on function-scoped event loops by default. Reusing
+    module globals backed by asyncpg/AsyncIOScheduler across loops can raise:
+    "Task got Future attached to a different loop". For non-integration tests,
+    force a clean slate before and after each test.
+    """
+
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+
+    import sentinel_prism.db.session as session_mod
+    from sentinel_prism.workers.digest_scheduler import reset_digest_scheduler_for_tests
+    from sentinel_prism.workers.poll_scheduler import reset_poll_scheduler_for_tests
+
+    async def _reset_db_session_singletons() -> None:
+        engine = getattr(session_mod, "_engine", None)
+        if engine is not None:
+            await engine.dispose()
+        session_mod._engine = None  # type: ignore[attr-defined]
+        session_mod._session_factory = None  # type: ignore[attr-defined]
+
+    await _reset_db_session_singletons()
+    reset_poll_scheduler_for_tests()
+    reset_digest_scheduler_for_tests()
+    yield
+    await _reset_db_session_singletons()
+    reset_poll_scheduler_for_tests()
+    reset_digest_scheduler_for_tests()
 
 
 def _brief_graph_db_factory() -> MagicMock:
