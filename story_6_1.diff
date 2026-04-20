@@ -1,0 +1,670 @@
+diff --git a/.env.example b/.env.example
+index 5f8b0ed..1c678d1 100644
+--- a/.env.example
++++ b/.env.example
+@@ -17,6 +17,9 @@ JWT_EXPIRE_MINUTES=60
+ # Credential verifier for POST /auth/login (Story 1.5): local (default) | stub (dev/tests only).
+ AUTH_PROVIDER=local
+ 
++# Dashboard “new items” window in hours (Story 6.1, FR30). Default 24; max 2160 (~90 days).
++# DASHBOARD_NEW_ITEMS_HOURS=24
++
+ # Briefing grouping (Story 4.3, FR18). JSON array of: date_bucket | jurisdiction | severity | topic.
+ # BRIEFING_GROUPING_DIMENSIONS=["date_bucket","jurisdiction","severity","topic"]
+ # BRIEFING_DATE_BUCKET=day
+diff --git a/src/sentinel_prism/graph/nodes/classify.py b/src/sentinel_prism/graph/nodes/classify.py
+index 288cd3b..770cf14 100644
+--- a/src/sentinel_prism/graph/nodes/classify.py
++++ b/src/sentinel_prism/graph/nodes/classify.py
+@@ -55,6 +55,24 @@ def _web_search_cache_put(key: tuple[str, str, str], value: str | None) -> None:
+         _web_search_cache.popitem(last=False)
+ 
+ 
++def _severity_histogram_from_classifications(
++    classifications: list[dict[str, Any]],
++) -> dict[str, int]:
++    """Bounded count-only histogram for audit metadata (Story 6.1 — FR30, NFR12)."""
++
++    counts: dict[str, int] = {}
++    for row in classifications:
++        if not isinstance(row, dict):
++            continue
++        raw = row.get("severity")
++        if raw is None or (isinstance(raw, str) and not raw.strip()):
++            key = "none"
++        else:
++            key = str(raw).strip().lower()
++        counts[key] = counts.get(key, 0) + 1
++    return counts
++
++
+ def _safe_error_detail(exc: BaseException, *, limit: int = 200) -> str:
+     """Render an exception for logs/state without leaking outbound query text.
+ 
+@@ -129,6 +147,7 @@ async def node_classify(
+             source_id=source_uuid,
+             metadata={
+                 "classification_count": 0,
++                "severity_histogram": {},
+                 "llm_trace": {
+                     "status": "no_attempt",
+                     "model_id": model_id,
+@@ -393,6 +412,9 @@ async def node_classify(
+         source_id=source_uuid,
+         metadata={
+             "classification_count": len(classifications),
++            "severity_histogram": _severity_histogram_from_classifications(
++                classifications
++            ),
+             "llm_trace": llm_meta,
+         },
+     )
+diff --git a/src/sentinel_prism/db/repositories/dashboard.py b/src/sentinel_prism/db/repositories/dashboard.py
+new file mode 100644
+index 0000000..64a8928
+--- /dev/null
++++ b/src/sentinel_prism/db/repositories/dashboard.py
+@@ -0,0 +1,130 @@
++"""Dashboard aggregates (Story 6.1 — FR30)."""
++
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass
++from datetime import datetime, timedelta, timezone
++from typing import Any
++from uuid import UUID
++
++from sqlalchemy import func, select
++from sqlalchemy.ext.asyncio import AsyncSession
++
++from sentinel_prism.db.models import (
++    AuditEvent,
++    NormalizedUpdateRow,
++    PipelineAuditAction,
++    ReviewQueueItem,
++    Source,
++)
++
++
++@dataclass(frozen=True)
++class TopSourceRow:
++    source_id: UUID
++    name: str
++    items_ingested_total: int
++
++
++@dataclass(frozen=True)
++class DashboardSummary:
++    severity_counts: dict[str, int]
++    new_items_count: int
++    new_items_window_hours: int
++    review_queue_count: int
++    top_sources: list[TopSourceRow]
++    top_sources_metric: str
++
++
++def default_new_items_window_hours() -> int:
++    raw = os.environ.get("DASHBOARD_NEW_ITEMS_HOURS", "24").strip()
++    try:
++        h = int(raw)
++    except ValueError:
++        h = 24
++    return max(1, min(h, 24 * 90))
++
++
++def _merge_severity_histograms(metadatas: list[dict[str, Any] | None]) -> dict[str, int]:
++    total: dict[str, int] = {}
++    for meta in metadatas:
++        if not meta or not isinstance(meta, dict):
++            continue
++        hist = meta.get("severity_histogram")
++        if not isinstance(hist, dict):
++            continue
++        for k, v in hist.items():
++            key = k if isinstance(k, str) else str(k)
++            try:
++                iv = int(v)
++            except (TypeError, ValueError):
++                continue
++            total[key] = total.get(key, 0) + iv
++    return dict(sorted(total.items()))
++
++
++async def fetch_dashboard_summary(
++    session: AsyncSession,
++    *,
++    new_items_window_hours: int | None = None,
++    top_sources_limit: int = 5,
++) -> DashboardSummary:
++    """Load overview metrics in a small number of round-trips.
++
++    **Severity:** For each ``run_id``, only the latest ``PIPELINE_CLASSIFY_COMPLETED``
++    row (by ``created_at``, then ``id``) contributes its ``severity_histogram``,
++    so LangGraph retries do not double-count items (Story 6.1 Option A).
++    """
++
++    hours = default_new_items_window_hours() if new_items_window_hours is None else new_items_window_hours
++    hours = max(1, min(int(hours), 24 * 90))
++    since = datetime.now(timezone.utc) - timedelta(hours=hours)
++
++    rn = (
++        func.row_number()
++        .over(
++            partition_by=AuditEvent.run_id,
++            order_by=(AuditEvent.created_at.desc(), AuditEvent.id.desc()),
++        )
++        .label("rn")
++    )
++    classified = (
++        select(AuditEvent.event_metadata, rn)
++        .where(AuditEvent.action == PipelineAuditAction.PIPELINE_CLASSIFY_COMPLETED)
++    ).subquery()
++
++    hist_stmt = select(classified.c.event_metadata).where(classified.c.rn == 1)
++    hist_res = await session.execute(hist_stmt)
++    severity_counts = _merge_severity_histograms(
++        [row[0] if isinstance(row[0], dict) else None for row in hist_res.all()]
++    )
++
++    new_items_stmt = select(func.count()).select_from(NormalizedUpdateRow).where(
++        NormalizedUpdateRow.created_at >= since
++    )
++    new_items_count = int(await session.scalar(new_items_stmt) or 0)
++
++    rq_stmt = select(func.count()).select_from(ReviewQueueItem)
++    review_queue_count = int(await session.scalar(rq_stmt) or 0)
++
++    lim = max(1, min(int(top_sources_limit), 50))
++    top_stmt = (
++        select(Source.id, Source.name, Source.items_ingested_total)
++        .order_by(Source.items_ingested_total.desc())
++        .limit(lim)
++    )
++    top_res = await session.execute(top_stmt)
++    top_sources = [
++        TopSourceRow(source_id=r[0], name=r[1], items_ingested_total=int(r[2]))
++        for r in top_res.all()
++    ]
++
++    return DashboardSummary(
++        severity_counts=severity_counts,
++        new_items_count=new_items_count,
++        new_items_window_hours=hours,
++        review_queue_count=review_queue_count,
++        top_sources=top_sources,
++        top_sources_metric="items_ingested_total",
++    )
+diff --git a/src/sentinel_prism/api/routes/dashboard.py b/src/sentinel_prism/api/routes/dashboard.py
+new file mode 100644
+index 0000000..222d511
+--- /dev/null
++++ b/src/sentinel_prism/api/routes/dashboard.py
+@@ -0,0 +1,87 @@
++"""Overview dashboard API (Story 6.1 — FR30, FR40)."""
++
++from __future__ import annotations
++
++import uuid
++
++from fastapi import APIRouter, Depends, Query
++from pydantic import BaseModel, ConfigDict, Field
++
++from sentinel_prism.api.deps import get_current_user
++from sentinel_prism.db.models import User
++from sentinel_prism.db.repositories import dashboard as dashboard_repo
++from sentinel_prism.db.session import get_db
++from sqlalchemy.ext.asyncio import AsyncSession
++
++router = APIRouter(prefix="/dashboard", tags=["dashboard"])
++
++
++class TopSourceOut(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++
++    source_id: uuid.UUID
++    name: str
++    metric: str = Field(
++        default="items_ingested_total",
++        description="Metric used for ranking (see ``top_sources_metric`` on the parent).",
++    )
++    value: int = Field(description="Value of ``metric`` for this source.")
++
++
++class DashboardSummaryOut(BaseModel):
++    model_config = ConfigDict(extra="forbid")
++
++    severity_counts: dict[str, int] = Field(
++        default_factory=dict,
++        description=(
++            "Aggregated severity histogram from latest classify audit per run "
++            "(``severity_histogram`` in ``PIPELINE_CLASSIFY_COMPLETED`` metadata)."
++        ),
++    )
++    new_items_count: int
++    new_items_window_hours: int = Field(
++        description="Counts ``normalized_updates`` with ``created_at`` within this many hours (UTC)."
++    )
++    review_queue_count: int
++    top_sources: list[TopSourceOut]
++    top_sources_metric: str = "items_ingested_total"
++
++
++@router.get("/summary", response_model=DashboardSummaryOut)
++async def get_dashboard_summary(
++    new_items_window_hours: int | None = Query(
++        default=None,
++        ge=1,
++        le=24 * 90,
++        description=(
++            "Override hours for the new-items widget. When omitted, uses "
++            "``DASHBOARD_NEW_ITEMS_HOURS`` or defaults to 24."
++        ),
++    ),
++    top_sources_limit: int = Query(default=5, ge=1, le=50),
++    _current: User = Depends(get_current_user),
++    db: AsyncSession = Depends(get_db),
++) -> DashboardSummaryOut:
++    """Authenticated console users (viewer and above) — same as notifications list."""
++
++    summary = await dashboard_repo.fetch_dashboard_summary(
++        db,
++        new_items_window_hours=new_items_window_hours,
++        top_sources_limit=top_sources_limit,
++    )
++    return DashboardSummaryOut(
++        severity_counts=summary.severity_counts,
++        new_items_count=summary.new_items_count,
++        new_items_window_hours=summary.new_items_window_hours,
++        review_queue_count=summary.review_queue_count,
++        top_sources=[
++            TopSourceOut(
++                source_id=row.source_id,
++                name=row.name,
++                metric=summary.top_sources_metric,
++                value=row.items_ingested_total,
++            )
++            for row in summary.top_sources
++        ],
++        top_sources_metric=summary.top_sources_metric,
++    )
+diff --git a/src/sentinel_prism/main.py b/src/sentinel_prism/main.py
+index af96dd4..0fdb920 100644
+--- a/src/sentinel_prism/main.py
++++ b/src/sentinel_prism/main.py
+@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
+ from sentinel_prism.api.routes import (
+     auth,
+     briefings,
++    dashboard,
+     delivery_attempts,
+     health,
+     notifications,
+@@ -128,6 +129,7 @@ def create_app() -> FastAPI:
+         allow_headers=["*"],
+     )
+     app.include_router(health.router)
++    app.include_router(dashboard.router)
+     app.include_router(auth.router)
+     app.include_router(sources.router)
+     app.include_router(runs.router)
+diff --git a/tests/test_dashboard_api.py b/tests/test_dashboard_api.py
+new file mode 100644
+index 0000000..1d02537
+--- /dev/null
++++ b/tests/test_dashboard_api.py
+@@ -0,0 +1,93 @@
++"""Dashboard summary API (Story 6.1 — FR30, FR40)."""
++
++from __future__ import annotations
++
++import uuid
++from datetime import datetime, timezone
++from unittest.mock import AsyncMock
++
++import pytest
++from asgi_lifespan import LifespanManager
++from httpx import ASGITransport, AsyncClient
++
++from sentinel_prism.api.deps import get_current_user
++from sentinel_prism.db.models import User, UserRole
++from sentinel_prism.db.repositories.dashboard import (
++    DashboardSummary,
++    TopSourceRow,
++)
++from sentinel_prism.db.session import get_db as session_get_db
++from sentinel_prism.main import create_app
++
++
++def _viewer_user() -> User:
++    return User(
++        id=uuid.uuid4(),
++        email="viewer@test.local",
++        password_hash="x",
++        role=UserRole.VIEWER,
++        is_active=True,
++    )
++
++
++@pytest.mark.asyncio
++async def test_dashboard_summary_unauthorized(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
++    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
++    app = create_app()
++    transport = ASGITransport(app=app)
++    async with LifespanManager(app):
++        async with AsyncClient(transport=transport, base_url="http://test") as client:
++            r = await client.get("/dashboard/summary")
++    assert r.status_code == 401
++
++
++@pytest.mark.asyncio
++async def test_dashboard_summary_ok(monkeypatch: pytest.MonkeyPatch) -> None:
++    monkeypatch.setenv("JWT_SECRET", "test-jwt-secret-32-characters-minimum")
++    monkeypatch.setenv("JWT_EXPIRE_MINUTES", "60")
++
++    async def fake_session() -> None:
++        yield AsyncMock()
++
++    fixed = datetime.now(timezone.utc)
++    summary = DashboardSummary(
++        severity_counts={"high": 2, "medium": 1},
++        new_items_count=7,
++        new_items_window_hours=24,
++        review_queue_count=3,
++        top_sources=[
++            TopSourceRow(
++                source_id=uuid.uuid4(),
++                name="FDA",
++                items_ingested_total=42,
++            )
++        ],
++        top_sources_metric="items_ingested_total",
++    )
++
++    app = create_app()
++    app.dependency_overrides[get_current_user] = lambda: _viewer_user()
++    app.dependency_overrides[session_get_db] = fake_session
++    monkeypatch.setattr(
++        "sentinel_prism.api.routes.dashboard.dashboard_repo.fetch_dashboard_summary",
++        AsyncMock(return_value=summary),
++    )
++    transport = ASGITransport(app=app)
++    try:
++        async with LifespanManager(app):
++            async with AsyncClient(transport=transport, base_url="http://test") as client:
++                r = await client.get("/dashboard/summary")
++        assert r.status_code == 200
++        body = r.json()
++        assert body["severity_counts"] == {"high": 2, "medium": 1}
++        assert body["new_items_count"] == 7
++        assert body["new_items_window_hours"] == 24
++        assert body["review_queue_count"] == 3
++        assert body["top_sources_metric"] == "items_ingested_total"
++        assert len(body["top_sources"]) == 1
++        assert body["top_sources"][0]["name"] == "FDA"
++        assert body["top_sources"][0]["value"] == 42
++        assert body["top_sources"][0]["metric"] == "items_ingested_total"
++    finally:
++        app.dependency_overrides.clear()
+diff --git a/tests/test_audit_events.py b/tests/test_audit_events.py
+index 3a5c518..cc1d409 100644
+--- a/tests/test_audit_events.py
++++ b/tests/test_audit_events.py
+@@ -451,7 +451,11 @@ async def test_node_classify_audit_metadata_schema() -> None:
+     kw = captured[0]
+     assert kw["action"] == PipelineAuditAction.PIPELINE_CLASSIFY_COMPLETED
+     meta = kw["metadata"]
+-    assert set(meta.keys()) <= {"classification_count", "llm_trace"}
++    assert set(meta.keys()) <= {
++        "classification_count",
++        "llm_trace",
++        "severity_histogram",
++    }
+     assert "completed_at" not in meta
+     llm_trace = meta["llm_trace"]
+     assert {"status", "model_id", "prompt_version"} <= set(llm_trace.keys())
+@@ -485,6 +489,7 @@ async def test_node_classify_empty_norms_emits_audit_with_zero_count() -> None:
+     kw = captured[0]
+     assert kw["action"] == PipelineAuditAction.PIPELINE_CLASSIFY_COMPLETED
+     assert kw["metadata"]["classification_count"] == 0
++    assert kw["metadata"]["severity_histogram"] == {}
+     assert kw["metadata"]["llm_trace"]["status"] == "no_attempt"
+ 
+ 
+diff --git a/web/src/App.tsx b/web/src/App.tsx
+index 64dd23f..792480c 100644
+--- a/web/src/App.tsx
++++ b/web/src/App.tsx
+@@ -1,4 +1,7 @@
+-import { FormEvent, useCallback, useEffect, useState } from "react";
++import { type FormEvent, useCallback, useEffect, useState } from "react";
++
++import { Dashboard } from "./components/Dashboard";
++import { readErrorMessage } from "./httpErrors";
+ 
+ const TOKEN_KEY = "sentinel_prism_token";
+ const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+@@ -31,24 +34,6 @@ type NotificationListResponse = {
+   has_more: boolean;
+ };
+ 
+-async function readErrorMessage(r: Response): Promise<string> {
+-  // FastAPI returns JSON error envelopes for HTTPException. Parse when
+-  // possible so we render a concise string instead of a raw body that may
+-  // leak schema / stack-trace details to the user (and to anyone watching
+-  // their screen).
+-  try {
+-    const ct = r.headers.get("content-type") ?? "";
+-    if (ct.includes("application/json")) {
+-      const j = (await r.json()) as { detail?: string | { msg?: string }[] };
+-      if (typeof j.detail === "string") return j.detail;
+-      if (Array.isArray(j.detail) && j.detail[0]?.msg) return j.detail[0].msg;
+-    }
+-  } catch {
+-    /* fall through to status text */
+-  }
+-  return `Request failed (${r.status} ${r.statusText})`;
+-}
+-
+ export default function App() {
+   const [email, setEmail] = useState("");
+   const [password, setPassword] = useState("");
+@@ -141,11 +126,11 @@ export default function App() {
+   }
+ 
+   return (
+-    <main style={{ fontFamily: "system-ui", maxWidth: 560, margin: "2rem auto", padding: 16 }}>
++    <main style={{ fontFamily: "system-ui", maxWidth: 960, margin: "2rem auto", padding: 16 }}>
+       <h1>Sentinel Prism</h1>
+       {!token ? (
+         <form onSubmit={login}>
+-          <p>Log in to load in-app notifications (Story 5.2).</p>
++          <p>Log in to open the analyst console (dashboard and notifications).</p>
+           <p style={{ fontSize: "0.9rem", color: "#444" }}>
+             API base: {API_BASE} (set <code>VITE_API_URL</code> if needed).
+           </p>
+@@ -175,7 +160,11 @@ export default function App() {
+               Log out
+             </button>
+           </p>
+-          <h2>Notifications</h2>
++          <Dashboard apiBase={API_BASE} token={token} />
++          <h2 style={{ marginTop: "2rem" }}>Notifications</h2>
++          <p style={{ fontSize: "0.9rem", color: "#444" }}>
++            In-app inbox (Story 5.2); critical routed items for your team.
++          </p>
+           <ul style={{ listStyle: "none", padding: 0 }}>
+             {items.map((n) => (
+               <li
+diff --git a/web/src/components/Dashboard.tsx b/web/src/components/Dashboard.tsx
+new file mode 100644
+index 0000000..5bff15b
+--- /dev/null
++++ b/web/src/components/Dashboard.tsx
+@@ -0,0 +1,131 @@
++import { useEffect, useState } from "react";
++
++import { readErrorMessage } from "../httpErrors";
++
++export type DashboardSummary = {
++  severity_counts: Record<string, number>;
++  new_items_count: number;
++  new_items_window_hours: number;
++  review_queue_count: number;
++  top_sources: {
++    source_id: string;
++    name: string;
++    metric: string;
++    value: number;
++  }[];
++  top_sources_metric: string;
++};
++
++type Props = {
++  apiBase: string;
++  token: string;
++};
++
++export function Dashboard({ apiBase, token }: Props) {
++  const [data, setData] = useState<DashboardSummary | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [err, setErr] = useState<string | null>(null);
++
++  useEffect(() => {
++    const ctrl = new AbortController();
++    (async () => {
++      setLoading(true);
++      setErr(null);
++      try {
++        const r = await fetch(`${apiBase}/dashboard/summary`, {
++          headers: { Authorization: `Bearer ${token}` },
++          signal: ctrl.signal,
++        });
++        if (r.status === 401) {
++          setErr("Session expired. Please log in again.");
++          setData(null);
++          return;
++        }
++        if (!r.ok) {
++          setErr(await readErrorMessage(r));
++          setData(null);
++          return;
++        }
++        setData((await r.json()) as DashboardSummary);
++      } catch (e) {
++        if ((e as { name?: string }).name === "AbortError") return;
++        setErr(e instanceof Error ? e.message : "Network error loading dashboard.");
++        setData(null);
++      } finally {
++        setLoading(false);
++      }
++    })();
++    return () => ctrl.abort();
++  }, [apiBase, token]);
++
++  const headingId = "dashboard-heading";
++
++  return (
++    <section role="region" aria-labelledby={headingId}>
++      <h2 id={headingId}>Overview</h2>
++      {loading && (
++        <p role="status" aria-live="polite">
++          Loading dashboard…
++        </p>
++      )}
++      {err && (
++        <p role="alert" style={{ color: "crimson" }}>
++          {err}
++        </p>
++      )}
++      {!loading && !err && data && (
++        <div
++          style={{
++            display: "grid",
++            gap: "1rem",
++            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
++          }}
++        >
++          <article aria-labelledby="widget-severity">
++            <h3 id="widget-severity">Severity distribution</h3>
++            <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
++              {Object.entries(data.severity_counts).length === 0 ? (
++                <li>No classified items in audit snapshot yet.</li>
++              ) : (
++                Object.entries(data.severity_counts).map(([k, v]) => (
++                  <li key={k}>
++                    <strong>{k}</strong>: {v}
++                  </li>
++                ))
++              )}
++            </ul>
++          </article>
++          <article aria-labelledby="widget-new">
++            <h3 id="widget-new">New items</h3>
++            <p style={{ fontSize: "1.5rem", margin: 0 }}>{data.new_items_count}</p>
++            <p style={{ fontSize: "0.85rem", color: "#444", margin: "0.25rem 0 0" }}>
++              Recorded in the last {data.new_items_window_hours} hour
++              {data.new_items_window_hours === 1 ? "" : "s"} (UTC).
++            </p>
++          </article>
++          <article aria-labelledby="widget-review">
++            <h3 id="widget-review">Human review backlog</h3>
++            <p style={{ fontSize: "1.5rem", margin: 0 }}>{data.review_queue_count}</p>
++          </article>
++          <article aria-labelledby="widget-sources">
++            <h3 id="widget-sources">Top sources</h3>
++            <p style={{ fontSize: "0.85rem", color: "#444", marginTop: 0 }}>
++              By {data.top_sources_metric}
++            </p>
++            <ol style={{ margin: 0, paddingLeft: "1.2rem" }}>
++              {data.top_sources.length === 0 ? (
++                <li>No sources registered.</li>
++              ) : (
++                data.top_sources.map((s) => (
++                  <li key={s.source_id}>
++                    <strong>{s.name}</strong> — {s.value}
++                  </li>
++                ))
++              )}
++            </ol>
++          </article>
++        </div>
++      )}
++    </section>
++  );
++}
+diff --git a/web/src/httpErrors.ts b/web/src/httpErrors.ts
+new file mode 100644
+index 0000000..dc11bba
+--- /dev/null
++++ b/web/src/httpErrors.ts
+@@ -0,0 +1,15 @@
++/** Parse FastAPI JSON error bodies into short user-facing strings. */
++
++export async function readErrorMessage(r: Response): Promise<string> {
++  try {
++    const ct = r.headers.get("content-type") ?? "";
++    if (ct.includes("application/json")) {
++      const j = (await r.json()) as { detail?: string | { msg?: string }[] };
++      if (typeof j.detail === "string") return j.detail;
++      if (Array.isArray(j.detail) && j.detail[0]?.msg) return j.detail[0].msg;
++    }
++  } catch {
++    /* fall through */
++  }
++  return `Request failed (${r.status} ${r.statusText})`;
++}
+diff --git a/web/src/index.css b/web/src/index.css
+index 0934f6d..13ea6de 100644
+--- a/web/src/index.css
++++ b/web/src/index.css
+@@ -7,3 +7,8 @@ body {
+   margin: 0;
+   padding: 1.5rem;
+ }
++
++button:focus-visible {
++  outline: 2px solid #2563eb;
++  outline-offset: 2px;
++}

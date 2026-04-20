@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # growth across long-lived worker processes.
 _WEB_SEARCH_CACHE_MAX_ENTRIES = 1000
 _web_search_cache: "OrderedDict[tuple[str, str, str], str | None]" = OrderedDict()
+_SEVERITY_BUCKETS = frozenset({"critical", "high", "medium", "low", "none", "other"})
 
 
 def _web_search_cache_get(key: tuple[str, str, str]) -> tuple[bool, str | None]:
@@ -53,6 +54,26 @@ def _web_search_cache_put(key: tuple[str, str, str], value: str | None) -> None:
     _web_search_cache[key] = value
     while len(_web_search_cache) > _WEB_SEARCH_CACHE_MAX_ENTRIES:
         _web_search_cache.popitem(last=False)
+
+
+def _severity_histogram_from_classifications(
+    classifications: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Bounded count-only histogram for audit metadata (Story 6.1 — FR30, NFR12)."""
+
+    counts: dict[str, int] = {}
+    for row in classifications:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("severity")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            key = "none"
+        else:
+            key = str(raw).strip().lower()
+        if key not in _SEVERITY_BUCKETS:
+            key = "other"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 def _safe_error_detail(exc: BaseException, *, limit: int = 200) -> str:
@@ -129,6 +150,7 @@ async def node_classify(
             source_id=source_uuid,
             metadata={
                 "classification_count": 0,
+                "severity_histogram": {},
                 "llm_trace": {
                     "status": "no_attempt",
                     "model_id": model_id,
@@ -393,6 +415,9 @@ async def node_classify(
         source_id=source_uuid,
         metadata={
             "classification_count": len(classifications),
+            "severity_histogram": _severity_histogram_from_classifications(
+                classifications
+            ),
             "llm_trace": llm_meta,
         },
     )

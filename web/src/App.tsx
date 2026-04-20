@@ -1,4 +1,7 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useState } from "react";
+
+import { Dashboard } from "./components/Dashboard";
+import { readErrorMessage } from "./httpErrors";
 
 const TOKEN_KEY = "sentinel_prism_token";
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
@@ -30,24 +33,6 @@ type NotificationListResponse = {
   items: NotificationItem[];
   has_more: boolean;
 };
-
-async function readErrorMessage(r: Response): Promise<string> {
-  // FastAPI returns JSON error envelopes for HTTPException. Parse when
-  // possible so we render a concise string instead of a raw body that may
-  // leak schema / stack-trace details to the user (and to anyone watching
-  // their screen).
-  try {
-    const ct = r.headers.get("content-type") ?? "";
-    if (ct.includes("application/json")) {
-      const j = (await r.json()) as { detail?: string | { msg?: string }[] };
-      if (typeof j.detail === "string") return j.detail;
-      if (Array.isArray(j.detail) && j.detail[0]?.msg) return j.detail[0].msg;
-    }
-  } catch {
-    /* fall through to status text */
-  }
-  return `Request failed (${r.status} ${r.statusText})`;
-}
 
 export default function App() {
   const [email, setEmail] = useState("");
@@ -141,11 +126,11 @@ export default function App() {
   }
 
   return (
-    <main style={{ fontFamily: "system-ui", maxWidth: 560, margin: "2rem auto", padding: 16 }}>
+    <main style={{ fontFamily: "system-ui", maxWidth: 960, margin: "2rem auto", padding: 16 }}>
       <h1>Sentinel Prism</h1>
       {!token ? (
         <form onSubmit={login}>
-          <p>Log in to load in-app notifications (Story 5.2).</p>
+          <p>Log in to open the analyst console (dashboard and notifications).</p>
           <p style={{ fontSize: "0.9rem", color: "#444" }}>
             API base: {API_BASE} (set <code>VITE_API_URL</code> if needed).
           </p>
@@ -175,7 +160,11 @@ export default function App() {
               Log out
             </button>
           </p>
-          <h2>Notifications</h2>
+          <Dashboard apiBase={API_BASE} token={token} />
+          <h2 style={{ marginTop: "2rem" }}>Notifications</h2>
+          <p style={{ fontSize: "0.9rem", color: "#444" }}>
+            In-app inbox (Story 5.2); critical routed items for your team.
+          </p>
           <ul style={{ listStyle: "none", padding: 0 }}>
             {items.map((n) => (
               <li

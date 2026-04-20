@@ -1,5 +1,5 @@
 # generated: 2026-04-12T12:00:00Z
-# last_updated: 2026-04-20T11:09:25Z
+# last_updated: 2026-04-20T19:00:00Z
 # project: Sentinel Prism
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-20T11:09:25Z"
+last_updated: "2026-04-20T20:30:00Z"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -84,8 +84,8 @@ development_status:
   5-5-regulatory-filing-guardrail: done
   epic-5-retrospective: optional
 
-  epic-6: backlog
-  6-1-overview-dashboard-widgets: backlog
+  epic-6: in-progress
+  6-1-overview-dashboard-widgets: done
   6-2-update-explorer-with-filters-and-detail-side-by-side: backlog
   6-3-admin-routing-and-escalation-table-management-ui: backlog
   epic-6-retrospective: optional

@@ -451,7 +451,11 @@ async def test_node_classify_audit_metadata_schema() -> None:
     kw = captured[0]
     assert kw["action"] == PipelineAuditAction.PIPELINE_CLASSIFY_COMPLETED
     meta = kw["metadata"]
-    assert set(meta.keys()) <= {"classification_count", "llm_trace"}
+    assert set(meta.keys()) <= {
+        "classification_count",
+        "llm_trace",
+        "severity_histogram",
+    }
     assert "completed_at" not in meta
     llm_trace = meta["llm_trace"]
     assert {"status", "model_id", "prompt_version"} <= set(llm_trace.keys())
@@ -485,6 +489,7 @@ async def test_node_classify_empty_norms_emits_audit_with_zero_count() -> None:
     kw = captured[0]
     assert kw["action"] == PipelineAuditAction.PIPELINE_CLASSIFY_COMPLETED
     assert kw["metadata"]["classification_count"] == 0
+    assert kw["metadata"]["severity_histogram"] == {}
     assert kw["metadata"]["llm_trace"]["status"] == "no_attempt"
 
 
