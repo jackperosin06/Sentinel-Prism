@@ -1,5 +1,5 @@
 # generated: 2026-04-12T12:00:00Z
-# last_updated: 2026-04-18T14:30:00Z
+# last_updated: 2026-04-20T20:30:00Z
 # project: Sentinel Prism
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-18T20:00:00Z"
+last_updated: "2026-04-20T20:30:00Z"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -76,8 +76,8 @@ development_status:
   4-3-briefing-generation-and-grouping: done
   epic-4-retrospective: optional
 
-  epic-5: backlog
-  5-1-routing-rules-engine: backlog
+  epic-5: in-progress
+  5-1-routing-rules-engine: review
   5-2-in-app-notifications: backlog
   5-3-external-channel-email-or-slack-sandbox-with-delivery-log: backlog
   5-4-immediate-vs-digest-scheduling: backlog

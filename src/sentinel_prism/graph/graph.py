@@ -11,6 +11,7 @@ from sentinel_prism.graph.nodes.brief import node_brief
 from sentinel_prism.graph.nodes.classify import node_classify
 from sentinel_prism.graph.nodes.human_review_gate import node_human_review_gate
 from sentinel_prism.graph.nodes.normalize import node_normalize
+from sentinel_prism.graph.nodes.route import node_route
 from sentinel_prism.graph.nodes.scout import node_scout
 from sentinel_prism.graph.retry import classify_node_retry_policy
 from sentinel_prism.graph.routing import (
@@ -38,6 +39,7 @@ def build_regulatory_pipeline_graph() -> StateGraph:
     )
     builder.add_node("human_review_gate", node_human_review_gate)
     builder.add_node("brief", node_brief)
+    builder.add_node("route", node_route)
     builder.add_edge(START, "scout")
     builder.add_edge("scout", "normalize")
     builder.add_edge("normalize", "classify")
@@ -50,7 +52,8 @@ def build_regulatory_pipeline_graph() -> StateGraph:
         },
     )
     builder.add_edge("human_review_gate", "brief")
-    builder.add_edge("brief", END)
+    builder.add_edge("brief", "route")
+    builder.add_edge("route", END)
     return builder
 
 

@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -49,6 +50,13 @@ class FallbackMode(StrEnum):
     HTML_PAGE = "html_page"
 
 
+class RoutingRuleType(StrEnum):
+    """Mock routing rule discriminator (Story 5.1 — FR21)."""
+
+    TOPIC = "topic"
+    SEVERITY = "severity"
+
+
 class PipelineAuditAction(StrEnum):
     """Append-only pipeline audit vocabulary (Story 3.8 — FR33 partial)."""
 
@@ -64,6 +72,7 @@ class PipelineAuditAction(StrEnum):
     HUMAN_REVIEW_REJECTED = "human_review_rejected"
     HUMAN_REVIEW_OVERRIDDEN = "human_review_overridden"
     BRIEFING_GENERATED = "briefing_generated"
+    ROUTING_APPLIED = "routing_applied"
 
 
 class Base(DeclarativeBase):
@@ -338,6 +347,74 @@ class ReviewQueueItem(Base):
     )
 
 
+class RoutingRule(Base):
+    """Mock routing table rows: topic (impact category) or severity → team/channel (Story 5.1).
+
+    **Precedence (application code, not DB):** topic rules assign
+    ``team_slug`` and ``channel_slug``. Severity rules always set
+    ``channel_slug``; when **no topic rule matched**, a severity rule also
+    backfills ``team_slug`` so severity-only routing still produces a usable
+    ``(team_slug, channel_slug)`` pair. When a topic rule matched, the
+    severity rule overrides ``channel_slug`` only and leaves ``team_slug``
+    untouched. Within each rule type, lower ``priority`` values are tried
+    first and ties break deterministically on ``id`` (see resolver /
+    repository ordering).
+
+    The DB CHECK constraints enforce that matching key columns
+    (``impact_category`` / ``severity_value``) are stored pre-normalized
+    (trimmed, lower-cased, non-empty) so the application-side normalization
+    in :mod:`sentinel_prism.services.routing.resolve` cannot silently alias
+    case/whitespace variants of the same logical rule.
+    """
+
+    __tablename__ = "routing_rules"
+    __table_args__ = (
+        CheckConstraint(
+            "(rule_type = 'topic' AND impact_category IS NOT NULL AND severity_value IS NULL) "
+            "OR (rule_type = 'severity' AND severity_value IS NOT NULL AND impact_category IS NULL)",
+            name="ck_routing_rules_topic_xor_severity",
+        ),
+        CheckConstraint(
+            "impact_category IS NULL OR ("
+            "impact_category = lower(impact_category) "
+            "AND impact_category = trim(impact_category) "
+            "AND length(impact_category) > 0)",
+            name="ck_routing_rules_impact_category_normalized",
+        ),
+        CheckConstraint(
+            "severity_value IS NULL OR ("
+            "severity_value = lower(severity_value) "
+            "AND severity_value = trim(severity_value) "
+            "AND length(severity_value) > 0)",
+            name="ck_routing_rules_severity_value_normalized",
+        ),
+        Index("ix_routing_rules_rule_type_priority", "rule_type", "priority"),
+        Index("ix_routing_rules_impact_category", "impact_category"),
+        Index("ix_routing_rules_severity_value", "severity_value"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    priority: Mapped[int] = mapped_column(Integer(), nullable=False)
+    rule_type: Mapped[RoutingRuleType] = mapped_column(
+        Enum(
+            RoutingRuleType,
+            native_enum=False,
+            length=16,
+            values_callable=_str_enum_values,
+        ),
+        nullable=False,
+    )
+    impact_category: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    severity_value: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    team_slug: Mapped[str] = mapped_column(String(128), nullable=False)
+    channel_slug: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Briefing(Base):
     """Persisted regulatory briefing for a pipeline run (Story 4.3 — FR18–FR20).
 
@@ -385,6 +462,22 @@ class AuditEvent(Base):
         Index("ix_audit_events_run_id_created_at", "run_id", "created_at"),
         Index("ix_audit_events_action", "action"),
         Index("ix_audit_events_source_id", "source_id"),
+        # Story 5.1 FR21 / AC #5: ``ROUTING_APPLIED`` must be at most one
+        # row per ``run_id``. The application-side
+        # :func:`sentinel_prism.db.repositories.audit_events.has_audit_event_for_run`
+        # gate still fires for observability (audit row is skipped rather
+        # than written-and-rejected on the happy path), but the partial
+        # unique index is the hard guarantee against the read-then-write
+        # TOCTOU between two concurrent ``node_route`` invocations on the
+        # same run. Scoped to ``routing_applied`` so other actions keep
+        # their existing append-only semantics (scout/normalize/classify
+        # intentionally emit one completion event per retry).
+        Index(
+            "uq_audit_events_routing_applied_run_id",
+            "run_id",
+            unique=True,
+            postgresql_where=text("action = 'routing_applied'"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

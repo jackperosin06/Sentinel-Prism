@@ -34,6 +34,7 @@ _GRAPH_DB_STUBBED_MODULES = frozenset(
         "test_graph_retry_policy.py",
         "test_graph_scout_normalize.py",
         "test_graph_shell.py",
+        "test_graph_route.py",
     }
 )
 
@@ -172,6 +173,51 @@ def _mock_brief_db_session_factory(
     monkeypatch.setattr(
         "sentinel_prism.graph.nodes.brief.get_session_factory",
         _brief_graph_db_factory(),
+    )
+
+
+def _route_graph_db_factory() -> MagicMock:
+    """Session factory for :func:`node_route` — ``execute`` supports ORM selects + audit."""
+
+    class _Scalars:
+        def all(self) -> list:
+            return []
+
+    class _ExecResult:
+        def scalars(self) -> _Scalars:
+            return _Scalars()
+
+        def scalar_one_or_none(self) -> None:
+            return None
+
+    async def _execute(*_a: object, **_k: object) -> _ExecResult:
+        return _ExecResult()
+
+    def _make_session() -> SimpleNamespace:
+        return SimpleNamespace(
+            execute=_execute,
+            add=MagicMock(),
+            flush=AsyncMock(),
+            commit=AsyncMock(),
+        )
+
+    session_cm = MagicMock()
+    session_cm.__aenter__ = AsyncMock(side_effect=_make_session)
+    session_cm.__aexit__ = AsyncMock(return_value=None)
+    sessionmaker = MagicMock(return_value=session_cm)
+    return MagicMock(return_value=sessionmaker)
+
+
+@pytest.fixture(autouse=True)
+def _mock_route_db_session_factory(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not _should_stub_graph_db(request):
+        return
+    monkeypatch.setattr(
+        "sentinel_prism.graph.nodes.route.get_session_factory",
+        _route_graph_db_factory(),
     )
 
 

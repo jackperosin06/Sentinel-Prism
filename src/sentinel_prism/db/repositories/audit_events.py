@@ -88,6 +88,26 @@ def _trim_metadata(meta: dict[str, Any] | None) -> dict[str, Any] | None:
     return out
 
 
+async def has_audit_event_for_run(
+    session: AsyncSession,
+    *,
+    run_id: str | UUID,
+    action: PipelineAuditAction | str,
+) -> bool:
+    """Return whether an audit row already exists for this run and action."""
+
+    rid = _parse_run_id(run_id)
+    if rid is None:
+        return False
+    act = _coerce_action(action)
+    res = await session.execute(
+        select(AuditEvent.id)
+        .where(AuditEvent.run_id == rid, AuditEvent.action == act)
+        .limit(1)
+    )
+    return res.scalar_one_or_none() is not None
+
+
 async def append_audit_event(
     session: AsyncSession,
     *,

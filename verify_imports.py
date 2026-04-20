@@ -19,6 +19,7 @@ def main() -> None:
     import sentinel_prism.graph.nodes.classify  # noqa: F401
     import sentinel_prism.graph.nodes.human_review_gate  # noqa: F401
     import sentinel_prism.graph.nodes.scout  # noqa: F401
+    import sentinel_prism.graph.nodes.route  # noqa: F401
     import sentinel_prism.graph.nodes.normalize  # noqa: F401
     import sentinel_prism.api.routes.runs  # noqa: F401
     import sentinel_prism.graph.pipeline_audit  # noqa: F401
