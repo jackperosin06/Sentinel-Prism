@@ -368,6 +368,17 @@ async def test_node_route_audit_write_failure_surfaces_error_and_preserves_decis
         fake_append,
     )
 
+    async def noop_notifications(
+        *, session_factory: object, run_id: str, decisions: list[dict[str, object]]
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        return [], []
+
+    monkeypatch.setattr(
+        "sentinel_prism.graph.nodes.route.process_routed_notification_deliveries",
+        noop_notifications,
+        raising=True,
+    )
+
     st = new_pipeline_state(uuid.uuid4())
     st["classifications"] = [
         {
@@ -428,6 +439,17 @@ async def test_node_route_audit_integrity_error_is_idempotent(
         fake_append,
     )
 
+    async def noop_notifications(
+        *, session_factory: object, run_id: str, decisions: list[dict[str, object]]
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        return [], []
+
+    monkeypatch.setattr(
+        "sentinel_prism.graph.nodes.route.process_routed_notification_deliveries",
+        noop_notifications,
+        raising=True,
+    )
+
     st = new_pipeline_state(uuid.uuid4())
     st["classifications"] = [
         {
@@ -475,7 +497,7 @@ async def test_node_route_invokes_in_app_enqueue_and_merges_delivery_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Story 5.2 review P27 — ``node_route`` must call
-    ``enqueue_critical_in_app_for_decisions`` once the routing decisions
+    ``process_routed_notification_deliveries`` once the routing decisions
     are resolved, forward the decisions verbatim, merge the returned
     ``delivery_events`` onto the node's output, and extend ``errors[]``
     with any enqueue error envelopes. This integration test closes the
@@ -523,9 +545,17 @@ async def test_node_route_invokes_in_app_enqueue_and_merges_delivery_events(
             ],
         )
 
+    async def fake_process(
+        *, session_factory: object, run_id: str, decisions: list[dict[str, object]]
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        return await fake_enqueue(
+            session_factory=session_factory, run_id=run_id, decisions=decisions
+        )
+
     monkeypatch.setattr(
-        "sentinel_prism.graph.nodes.route.enqueue_critical_in_app_for_decisions",
-        fake_enqueue,
+        "sentinel_prism.graph.nodes.route.process_routed_notification_deliveries",
+        fake_process,
+        raising=True,
     )
 
     run_id = uuid.uuid4()

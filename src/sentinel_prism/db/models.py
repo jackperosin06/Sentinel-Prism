@@ -382,6 +382,43 @@ class ReviewQueueItem(Base):
     )
 
 
+class NotificationDigestQueueItem(Base):
+    """Pending lower-priority routed items for batched digest delivery (Story 5.4).
+
+    **Idempotency:** ``(run_id, item_url, team_slug)`` matches graph replay semantics
+    for the route node. Flush jobs delete rows after successful batched delivery.
+    """
+
+    __tablename__ = "notification_digest_queue"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "item_url",
+            "team_slug",
+            name="uq_notification_digest_queue_run_item_team",
+        ),
+        Index(
+            "ix_notification_digest_queue_pending_team",
+            "team_slug",
+            "created_at",
+        ),
+        Index("ix_notification_digest_queue_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    item_url: Mapped[str] = mapped_column(Text(), nullable=False)
+    team_slug: Mapped[str] = mapped_column(String(128), nullable=False)
+    channel_slug: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class InAppNotification(Base):
     """Per-user inbox row for routed pipeline items (Story 5.2 — FR24).
 

@@ -33,6 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
     from sentinel_prism.services.auth.providers.factory import get_auth_provider
     from sentinel_prism.services.auth.tokens import _algorithm, _secret
+    from sentinel_prism.workers.digest_scheduler import get_digest_scheduler
     from sentinel_prism.workers.poll_scheduler import get_poll_scheduler
 
     _secret()
@@ -79,6 +80,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 logger.exception("poll_scheduler shutdown raised during lifespan exit")
 
         stack.push_async_callback(_shutdown_scheduler)
+
+        digest_sched = get_digest_scheduler()
+        digest_scheduler_started = await digest_sched.start()
+
+        async def _shutdown_digest_scheduler() -> None:
+            if not digest_scheduler_started:
+                return
+            try:
+                await digest_sched.shutdown()
+            except Exception:
+                logger.exception("digest_scheduler shutdown raised during lifespan exit")
+
+        stack.push_async_callback(_shutdown_digest_scheduler)
 
         yield
 

@@ -159,11 +159,11 @@ async def test_external_smtp_sends_and_finalizes(
     claim_mock = AsyncMock(return_value=True)
     finalize_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.claim_attempt_pending",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.claim_attempt_pending",
         claim_mock,
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.finalize_attempt_outcome",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.finalize_attempt_outcome",
         finalize_mock,
     )
     send_mock = AsyncMock(return_value=(True, None, None))
@@ -214,7 +214,7 @@ async def test_external_smtp_idempotent_claim_skips_send(
         fake_members,
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.claim_attempt_pending",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.claim_attempt_pending",
         AsyncMock(return_value=False),
     )
     send_mock = AsyncMock()
@@ -224,7 +224,7 @@ async def test_external_smtp_idempotent_claim_skips_send(
     )
     finalize_mock = AsyncMock()
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.finalize_attempt_outcome",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.finalize_attempt_outcome",
         finalize_mock,
     )
 
@@ -326,12 +326,12 @@ async def test_external_smtp_send_failure_records_failure_row(
         fake_members,
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.claim_attempt_pending",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.claim_attempt_pending",
         AsyncMock(return_value=True),
     )
     finalize_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.finalize_attempt_outcome",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.finalize_attempt_outcome",
         finalize_mock,
     )
     monkeypatch.setattr(
@@ -441,12 +441,12 @@ async def test_external_slack_sends_and_finalizes(
         one_member,
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.claim_attempt_pending",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.claim_attempt_pending",
         AsyncMock(return_value=True),
     )
     finalize_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.finalize_attempt_outcome",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.finalize_attempt_outcome",
         finalize_mock,
     )
     slack_mock = AsyncMock(return_value=(True, None, None, None))
@@ -496,12 +496,12 @@ async def test_external_slack_failure_records_recorded_failure_event(
         one_member,
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.claim_attempt_pending",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.claim_attempt_pending",
         AsyncMock(return_value=True),
     )
     finalize_mock = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.finalize_attempt_outcome",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.finalize_attempt_outcome",
         finalize_mock,
     )
     monkeypatch.setattr(
@@ -542,11 +542,11 @@ async def test_error_envelope_dedup_across_decisions(
         one_member,
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.claim_attempt_pending",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.claim_attempt_pending",
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.finalize_attempt_outcome",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.finalize_attempt_outcome",
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
@@ -591,11 +591,11 @@ async def test_unhandled_decision_exception_does_not_abort_batch(
         boom,
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.claim_attempt_pending",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.claim_attempt_pending",
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(
-        "sentinel_prism.services.notifications.external.delivery_repo.finalize_attempt_outcome",
+        "sentinel_prism.services.notifications._attempts.delivery_repo.finalize_attempt_outcome",
         AsyncMock(return_value=True),
     )
     monkeypatch.setattr(

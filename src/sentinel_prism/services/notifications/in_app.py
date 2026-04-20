@@ -2,8 +2,10 @@
 
 **Scope and semantics (code-review 2026-04-20):**
 
-* Severity gate: only severities in :data:`IN_APP_ALLOWED_SEVERITIES` enqueue
-  rows. MVP ships ``{"critical"}``. Any other severity is skipped with an
+* Severity gate: only severities in the env-driven **immediate** policy
+  (:func:`sentinel_prism.services.notifications.notification_policy.load_notification_policy`)
+  enqueue rows (default ``critical`` + ``high`` — Story 5.4). Any other
+  severity is skipped with an
   INFO-level log event so upstream taxonomy drift (new severity labels) is
   observable in operator logs.
 * Team targeting: ``team_slug`` is looked up case-insensitively against
@@ -43,16 +45,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sentinel_prism.db.repositories import in_app_notifications as in_app_repo
+from sentinel_prism.services.notifications.notification_policy import (
+    load_notification_policy,
+)
 
 logger = logging.getLogger(__name__)
 
-# Story 5.2 AC #3 — the epic gates in-app delivery to ``critical`` routed items.
-# Kept as a set so adding a policy flag (e.g., promoting ``high`` under a config
-# flag) is a one-line change and the ``not in`` check is O(1).
-IN_APP_ALLOWED_SEVERITIES: frozenset[str] = frozenset({"critical"})
+# Default PRD catalog (NOTIFICATIONS_IMMEDIATE_SEVERITIES overrides at runtime).
+IN_APP_ALLOWED_SEVERITIES: frozenset[str] = frozenset({"critical", "high"})
 
-# Backward-compat alias for existing imports (tests). Prefer
-# :data:`IN_APP_ALLOWED_SEVERITIES` for new code.
+# Backward-compat alias for tests and docs (exact-match policy uses
+# :func:`load_notification_policy`).
 IN_APP_MIN_SEVERITY: str = "critical"
 
 SessionMaker = async_sessionmaker[AsyncSession]
@@ -78,6 +81,77 @@ def _truncate(value: str, *, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: max(0, limit - 1)] + "…"
+
+
+def _severity_rank(severity: str) -> int:
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    return order.get(str(severity).strip().lower(), 99)
+
+
+def highest_severity(values: list[str]) -> str:
+    """Return highest-priority canonical severity from a list."""
+    cleaned = [str(v).strip().lower() for v in values if str(v).strip()]
+    if not cleaned:
+        return "medium"
+    return sorted(cleaned, key=_severity_rank)[0]
+
+
+async def enqueue_in_app_message_for_team(
+    *,
+    session: AsyncSession,
+    run_id: uuid.UUID,
+    team_slug: str,
+    item_url: str,
+    severity: str,
+    title: str,
+    body: str,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Insert one in-app message fanout for all active team users.
+
+    Returns ``(inserted_rows, errors)``.
+    """
+    errors: list[dict[str, Any]] = []
+    team_slug_canonical = str(team_slug).strip()
+    team_slug_key = team_slug_canonical.lower()
+    user_ids = await in_app_repo.list_user_ids_for_team_slug(session, team_slug=team_slug_key)
+    if not user_ids:
+        errors.append(
+            {
+                "step": "in_app_notifications",
+                "message": "in_app_no_recipients",
+                "error_class": "NoRecipients",
+                "detail": f"team_slug={team_slug_canonical}",
+            }
+        )
+        return 0, errors
+
+    inserted_total = 0
+    for uid in user_ids:
+        try:
+            async with session.begin_nested():
+                ok = await in_app_repo.insert_notification_ignore_conflict(
+                    session,
+                    user_id=uid,
+                    run_id=run_id,
+                    item_url=item_url,
+                    team_slug=team_slug_canonical,
+                    severity=str(severity).strip().lower(),
+                    title=title,
+                    body=body,
+                )
+        except SQLAlchemyError as exc:
+            errors.append(
+                {
+                    "step": "in_app_notifications",
+                    "message": "in_app_insert_skipped",
+                    "error_class": type(exc).__name__,
+                    "detail": _safe_error_detail(exc),
+                }
+            )
+            continue
+        if ok:
+            inserted_total += 1
+    return inserted_total, errors
 
 
 async def enqueue_critical_in_app_for_decisions(
@@ -124,7 +198,8 @@ async def enqueue_critical_in_app_for_decisions(
                 if not d.get("matched"):
                     continue
                 sev_raw = str(d.get("severity") or "").strip().lower()
-                if sev_raw not in IN_APP_ALLOWED_SEVERITIES:
+                allowed = load_notification_policy().immediate_severities
+                if sev_raw not in allowed:
                     # P20 — surface severity-filter skips so upstream taxonomy
                     # drift is detectable in operator logs (otherwise a new
                     # severity label would silently disable in-app routing).
@@ -144,22 +219,24 @@ async def enqueue_critical_in_app_for_decisions(
                 if ts is None or not str(ts).strip():
                     continue
                 team_slug_canonical = str(ts).strip()
-                team_slug_key = team_slug_canonical.lower()
                 url = _truncate(
                     _norm_item_url(d.get("item_url")), limit=_MAX_ITEM_URL_CHARS
                 )
                 if not url:
                     continue
 
-                user_ids = await in_app_repo.list_user_ids_for_team_slug(
-                    session, team_slug=team_slug_key
+                title = f"{sev_raw.capitalize()} routed update"
+                body = _truncate(url, limit=_MAX_BODY_CHARS)
+                inserted, team_errors = await enqueue_in_app_message_for_team(
+                    session=session,
+                    run_id=rid,
+                    team_slug=team_slug_canonical,
+                    item_url=url,
+                    severity=sev_raw,
+                    title=title,
+                    body=body,
                 )
-                if not user_ids:
-                    # P11 — zero matching recipients for a critical item is a
-                    # pager-worthy silent-drop condition. Surface via structured
-                    # log and a non-fatal errors[] envelope (routing decision
-                    # itself is still valid — this only reports that enqueue
-                    # had nowhere to deliver).
+                if team_errors:
                     logger.warning(
                         "in_app_notifications",
                         extra={
@@ -171,64 +248,10 @@ async def enqueue_critical_in_app_for_decisions(
                             },
                         },
                     )
-                    errors.append(
-                        {
-                            "step": "in_app_notifications",
-                            "message": "in_app_no_recipients",
-                            "error_class": "NoRecipients",
-                            "detail": f"team_slug={team_slug_canonical}",
-                        }
-                    )
-                    continue
-
-                # Only count decisions where we actually attempt inserts as
-                # "eligible" — a team with zero members is reported via the
-                # errors[] envelope above, not as a "no_new_rows" replay.
-                eligible_decisions += 1
-
-                title = "Critical routed update"
-                body = _truncate(url, limit=_MAX_BODY_CHARS)
-                for uid in user_ids:
-                    # P3 — wrap each per-user insert in a SAVEPOINT so an
-                    # FK-violation from a concurrent user deletion does not
-                    # roll back the whole batch. ``begin_nested()`` issues
-                    # ``SAVEPOINT`` on enter and ``RELEASE``/``ROLLBACK TO``
-                    # on exit; the outer transaction continues.
-                    try:
-                        async with session.begin_nested():
-                            ok = await in_app_repo.insert_notification_ignore_conflict(
-                                session,
-                                user_id=uid,
-                                run_id=rid,
-                                item_url=url,
-                                team_slug=team_slug_canonical,
-                                severity=sev_raw,
-                                title=title,
-                                body=body,
-                            )
-                    except SQLAlchemyError as exc:
-                        logger.warning(
-                            "in_app_notifications",
-                            extra={
-                                "event": "in_app_insert_skipped",
-                                "ctx": {
-                                    "run_id": str(rid),
-                                    "team_slug": team_slug_canonical,
-                                    "error_class": type(exc).__name__,
-                                },
-                            },
-                        )
-                        errors.append(
-                            {
-                                "step": "in_app_notifications",
-                                "message": "in_app_insert_skipped",
-                                "error_class": type(exc).__name__,
-                                "detail": _safe_error_detail(exc),
-                            }
-                        )
-                        continue
-                    if ok:
-                        inserted_total += 1
+                    errors.extend(team_errors)
+                if not any(e.get("message") == "in_app_no_recipients" for e in team_errors):
+                    eligible_decisions += 1
+                inserted_total += inserted
             await session.commit()
             committed = True
     except SQLAlchemyError as exc:

@@ -2,7 +2,7 @@
 
 Covers (mocked session, no DB):
 
-* Severity gate (critical-only, including log on skip of other severities)
+* Severity gate (immediate policy; default critical+high, including log on skip)
 * Matched-false decisions are skipped
 * Canonical team_slug casing preservation
 * Zero-recipients surfaces an ``errors[]`` envelope
@@ -23,10 +23,9 @@ import pytest
 from sqlalchemy.exc import SQLAlchemyError
 
 from sentinel_prism.services.notifications.in_app import (
-    IN_APP_ALLOWED_SEVERITIES,
-    IN_APP_MIN_SEVERITY,
     enqueue_critical_in_app_for_decisions,
 )
+from sentinel_prism.services.notifications.notification_policy import reload_notification_policy
 
 
 def _session_factory_stub(
@@ -71,15 +70,15 @@ def _session_factory_stub(
 
 
 @pytest.mark.asyncio
-async def test_enqueue_skips_non_critical_severity(
+async def test_enqueue_skips_non_immediate_severity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Severity gate blocks ``high`` even when recipients DO exist.
+    monkeypatch.setenv("NOTIFICATIONS_IMMEDIATE_SEVERITIES", "critical,high")
+    reload_notification_policy()
+    """Severity gate blocks ``medium`` (digest path) even when recipients DO exist.
 
-    Previously the stub returned ``[]`` for recipients, which made the
-    assertion tautological: it would pass even if the severity check were
-    deleted entirely. Now we return a real recipient so the only thing
-    preventing insertion is the severity gate.
+    Default immediate policy is ``critical`` + ``high`` (Story 5.4). ``medium``
+    must not enqueue on the immediate path.
     """
 
     inserts: list[dict[str, object]] = []
@@ -107,7 +106,7 @@ async def test_enqueue_skips_non_critical_severity(
         decisions=[
             {
                 "matched": True,
-                "severity": "high",
+                "severity": "medium",
                 "team_slug": "alpha",
                 "item_url": "https://ex/a",
             }
@@ -122,6 +121,8 @@ async def test_enqueue_skips_non_critical_severity(
 async def test_enqueue_skips_unmatched_decisions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("NOTIFICATIONS_IMMEDIATE_SEVERITIES", "critical,high")
+    reload_notification_policy()
     """AC #2 — a critical decision that did not match a routing rule must
     not enqueue, even when the severity and team_slug shape is otherwise
     valid. Guards the ``if not d.get("matched"): continue`` branch against
@@ -151,7 +152,7 @@ async def test_enqueue_skips_unmatched_decisions(
         decisions=[
             {
                 "matched": False,
-                "severity": IN_APP_MIN_SEVERITY,
+                "severity": "critical",
                 "team_slug": "alpha",
                 "item_url": "https://ex/a",
             }
@@ -166,6 +167,8 @@ async def test_enqueue_skips_unmatched_decisions(
 async def test_enqueue_no_recipients_surfaces_error_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("NOTIFICATIONS_IMMEDIATE_SEVERITIES", "critical,high")
+    reload_notification_policy()
     """Critical decision whose team has zero active members must not
     silently drop — the service must emit a non-fatal ``errors[]`` entry
     so operators can detect pager-level routing misconfiguration."""
@@ -194,7 +197,7 @@ async def test_enqueue_no_recipients_surfaces_error_envelope(
         decisions=[
             {
                 "matched": True,
-                "severity": IN_APP_MIN_SEVERITY,
+                "severity": "critical",
                 "team_slug": "ghost-team",
                 "item_url": "https://ex/a",
             }
@@ -211,6 +214,8 @@ async def test_enqueue_no_recipients_surfaces_error_envelope(
 async def test_enqueue_inserts_preserve_canonical_team_slug_casing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("NOTIFICATIONS_IMMEDIATE_SEVERITIES", "critical,high")
+    reload_notification_policy()
     """Team lookup is case-insensitive (``lower(team_slug)``), but the
     persisted row uses the original casing from the routing decision so
     audit/UI reflect the rule-author's canonical slug."""
@@ -245,7 +250,7 @@ async def test_enqueue_inserts_preserve_canonical_team_slug_casing(
         decisions=[
             {
                 "matched": True,
-                "severity": IN_APP_MIN_SEVERITY,
+                "severity": "critical",
                 "team_slug": "Team-Alpha",
                 "item_url": "https://ex/critical-item",
             }
@@ -268,6 +273,8 @@ async def test_enqueue_inserts_preserve_canonical_team_slug_casing(
 async def test_enqueue_replay_emits_no_new_rows_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("NOTIFICATIONS_IMMEDIATE_SEVERITIES", "critical,high")
+    reload_notification_policy()
     """When every INSERT hits the unique constraint (``rowcount == 0``),
     the service must still emit a ``delivery_events`` entry with
     ``status="no_new_rows"`` so the audit trail shows "considered, all
@@ -294,7 +301,7 @@ async def test_enqueue_replay_emits_no_new_rows_event(
         decisions=[
             {
                 "matched": True,
-                "severity": IN_APP_MIN_SEVERITY,
+                "severity": "critical",
                 "team_slug": "alpha",
                 "item_url": "https://ex/already-seen",
             }
@@ -310,6 +317,8 @@ async def test_enqueue_replay_emits_no_new_rows_event(
 async def test_enqueue_commit_failure_does_not_emit_delivery_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("NOTIFICATIONS_IMMEDIATE_SEVERITIES", "critical,high")
+    reload_notification_policy()
     """If ``session.commit()`` itself raises, ``delivery_events`` must NOT
     claim rows were persisted — the transaction rolled back and no rows
     exist. Regression guard for the most critical code-review finding."""
@@ -338,7 +347,7 @@ async def test_enqueue_commit_failure_does_not_emit_delivery_event(
         decisions=[
             {
                 "matched": True,
-                "severity": IN_APP_MIN_SEVERITY,
+                "severity": "critical",
                 "team_slug": "alpha",
                 "item_url": "https://ex/a",
             }
@@ -350,8 +359,10 @@ async def test_enqueue_commit_failure_does_not_emit_delivery_event(
     commit_mock.assert_awaited()
 
 
-def test_allowed_severities_constant_has_critical() -> None:
-    """Smoke check: the renamed constant still contains ``critical``."""
-
-    assert "critical" in IN_APP_ALLOWED_SEVERITIES
-    assert IN_APP_MIN_SEVERITY == "critical"
+def test_default_immediate_policy_includes_critical_high(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("NOTIFICATIONS_IMMEDIATE_SEVERITIES", raising=False)
+    policy = reload_notification_policy()
+    assert "critical" in policy.immediate_severities
+    assert "high" in policy.immediate_severities

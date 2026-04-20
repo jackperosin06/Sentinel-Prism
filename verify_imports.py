@@ -31,9 +31,14 @@ def main() -> None:
     import sentinel_prism.graph.tools.factory  # noqa: F401
     import sentinel_prism.services.notifications.adapters.slack  # noqa: F401
     import sentinel_prism.services.notifications.adapters.smtp  # noqa: F401
+    import sentinel_prism.services.notifications._attempts  # noqa: F401
     import sentinel_prism.services.notifications.external  # noqa: F401
+    import sentinel_prism.services.notifications.digest_flush  # noqa: F401
     import sentinel_prism.services.notifications.external_settings  # noqa: F401
     import sentinel_prism.services.notifications.in_app  # noqa: F401
+    import sentinel_prism.services.notifications.notification_policy  # noqa: F401
+    import sentinel_prism.services.notifications.scheduling  # noqa: F401
+    import sentinel_prism.workers.digest_scheduler  # noqa: F401
     import sentinel_prism.services.search.settings  # noqa: F401
     import sentinel_prism.services.llm.classification  # noqa: F401
     import sentinel_prism.services.llm.classification_retry  # noqa: F401

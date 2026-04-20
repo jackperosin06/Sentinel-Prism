@@ -2,8 +2,9 @@
 
 **MVP policy (AC #7 — documented in code):**
 
-* Severity gate matches in-app: only ``IN_APP_ALLOWED_SEVERITIES``
-  (MVP: ``{"critical"}``) sends externally. All other severities are
+* Severity gate matches in-app: only
+  :func:`sentinel_prism.services.notifications.notification_policy.load_notification_policy`
+  **immediate** severities (default ``critical`` + ``high``). All other severities are
   skipped with an observability log for taxonomy drift parity with
   :mod:`sentinel_prism.services.notifications.in_app` (AC #5 /
   "extend, don't duplicate").
@@ -53,7 +54,6 @@ does not import ``graph.*``. Vendor/protocol code lives in
 from __future__ import annotations
 
 import logging
-import re
 import uuid
 from typing import Any
 
@@ -65,40 +65,28 @@ from sentinel_prism.db.models import (
     NotificationDeliveryOutcome,
 )
 from sentinel_prism.db.repositories import in_app_notifications as in_app_repo
-from sentinel_prism.db.repositories import notification_delivery_attempts as delivery_repo
+from sentinel_prism.services.notifications._attempts import (
+    claim_attempt as _claim_attempt,
+    finalize_attempt as _finalize_attempt,
+    safe_detail as _safe_detail,
+    slack_descriptor as _slack_descriptor,
+    slack_escape as _slack_escape,
+)
 from sentinel_prism.services.notifications.adapters.slack import send_slack_webhook_text
 from sentinel_prism.services.notifications.adapters.smtp import send_smtp_email
 from sentinel_prism.services.notifications.external_settings import (
     ExternalNotificationSettings,
     load_external_notification_settings,
 )
-from sentinel_prism.services.notifications.in_app import IN_APP_ALLOWED_SEVERITIES
+from sentinel_prism.services.notifications.notification_policy import (
+    load_notification_policy,
+)
 
 logger = logging.getLogger(__name__)
 
 SessionMaker = async_sessionmaker[AsyncSession]
 
 _MAX_ITEM_URL_CHARS = 2048
-_MAX_DETAIL_CHARS = 500
-
-# Slack incoming webhooks interpret ``<!channel>``, ``<!here>``, and
-# ``<!everyone>`` as broadcast mentions regardless of which user posts,
-# and ``<@USERID>`` as a direct mention. A malicious or careless
-# routing rule (or upstream feed supplying a `team_slug` like
-# ``compliance <!channel>``) could trigger broadcasts to every Slack
-# member if interpolated verbatim. Strip/escape before posting.
-_SLACK_MENTION_RE = re.compile(r"<[!@][^>]*>")
-
-
-def _slack_escape(text: str) -> str:
-    # Replace any ``<...>`` Slack control sequences with a safe stub.
-    # Also defuse bare ``@channel``/``@here``/``@everyone`` which Slack
-    # renders as live mentions in some legacy surfaces.
-    safe = _SLACK_MENTION_RE.sub("[mention-redacted]", text or "")
-    safe = re.sub(r"@(channel|here|everyone)\b", r"@\\\1", safe, flags=re.IGNORECASE)
-    return safe
-
-
 def _norm_item_url(raw: Any) -> str:
     return str(raw or "").strip()
 
@@ -107,28 +95,6 @@ def _truncate(value: str, *, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: max(0, limit - 1)] + "…"
-
-
-def _safe_detail(text: str | None) -> str | None:
-    if text is None:
-        return None
-    t = text.replace("\r", " ").replace("\n", " ").strip()
-    if not t:
-        return None
-    return _truncate(t, limit=_MAX_DETAIL_CHARS)
-
-
-def _slack_descriptor(team_slug_key: str) -> str:
-    """Stable idempotency descriptor per (team, slack webhook).
-
-    Previously hard-coded to ``slack_webhook``, which collapsed every
-    team's routed decision for a single ``run_id`` into one idempotency
-    bucket — so a run targeting both ``compliance`` and ``legal`` only
-    sent one message. Scoping by ``team_slug`` restores per-team
-    semantics without requiring a second column.
-    """
-
-    return f"slack_webhook:{team_slug_key}"
 
 
 async def enqueue_external_for_decisions(
@@ -216,7 +182,7 @@ async def enqueue_external_for_decisions(
         if not d.get("matched"):
             continue
         sev_raw = str(d.get("severity") or "").strip().lower()
-        if sev_raw not in IN_APP_ALLOWED_SEVERITIES:
+        if sev_raw not in load_notification_policy().immediate_severities:
             if sev_raw:
                 logger.info(
                     "external_notifications",
@@ -288,72 +254,6 @@ async def enqueue_external_for_decisions(
             _append_error(e)
 
     return delivery_events, errors
-
-
-async def _claim_attempt(
-    session_factory: SessionMaker,
-    *,
-    run_id: uuid.UUID,
-    item_url: str,
-    channel: NotificationDeliveryChannel,
-    recipient_descriptor: str,
-) -> tuple[bool, str | None]:
-    """Return ``(claimed, error_detail)`` — True if a new pending row was inserted."""
-
-    try:
-        async with session_factory() as session:
-            try:
-                claimed = await delivery_repo.claim_attempt_pending(
-                    session,
-                    run_id=run_id,
-                    item_url=item_url,
-                    channel=channel,
-                    recipient_descriptor=recipient_descriptor,
-                )
-                await session.commit()
-                return claimed, None
-            except SQLAlchemyError as exc:
-                await session.rollback()
-                return False, f"{type(exc).__name__}: {str(exc)[:200]}"
-    except Exception as exc:  # noqa: BLE001 — session factory / context issues
-        return False, f"{type(exc).__name__}: {str(exc)[:200]}"
-
-
-async def _finalize_attempt(
-    session_factory: SessionMaker,
-    *,
-    run_id: uuid.UUID,
-    item_url: str,
-    channel: NotificationDeliveryChannel,
-    recipient_descriptor: str,
-    outcome: NotificationDeliveryOutcome,
-    error_class: str | None,
-    detail: str | None,
-    provider_message_id: str | None,
-) -> str | None:
-    """Return ``None`` on success, or an error detail string."""
-
-    try:
-        async with session_factory() as session:
-            try:
-                await delivery_repo.finalize_attempt_outcome(
-                    session,
-                    run_id=run_id,
-                    item_url=item_url,
-                    channel=channel,
-                    recipient_descriptor=recipient_descriptor,
-                    outcome=outcome,
-                    error_class=error_class,
-                    detail=detail,
-                    provider_message_id=provider_message_id,
-                )
-                await session.commit()
-                return None
-            except SQLAlchemyError as exc:
-                await session.rollback()
-                return f"{type(exc).__name__}: {str(exc)[:200]}"
-    except Exception as exc:  # noqa: BLE001
-        return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
 async def _deliver_smtp_decision(
@@ -451,7 +351,9 @@ async def _deliver_smtp_decision(
             password=cfg.smtp_password,
             from_addr=cfg.smtp_from or "",
             to_addr=desc,
-            subject=f"[Sentinel Prism] Critical routed update ({team_slug})",
+            subject=(
+                f"[Sentinel Prism] {severity.capitalize()} routed update ({team_slug})"
+            ),
             body=(
                 f"Severity: {severity}\n"
                 f"Team: {team_slug}\n"
@@ -608,7 +510,7 @@ async def _deliver_slack_decision(
         return out_ev, out_err
 
     text = (
-        "*Sentinel Prism* — critical routed update\n"
+        f"*Sentinel Prism* — {severity} routed update\n"
         f"*Severity:* {_slack_escape(severity)}\n"
         f"*Team:* {_slack_escape(team_slug)}\n"
         f"*Item:* {_slack_escape(item_url)}"
