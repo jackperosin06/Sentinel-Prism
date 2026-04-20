@@ -468,3 +468,93 @@ async def test_compiled_pipeline_brief_route_end_wiring(
     assert ("route", END) in edge_pairs, "route must be terminal"
     # No direct brief → END shortcut remains after Story 5.1.
     assert ("brief", END) not in edge_pairs, "brief → END must be replaced by brief → route → END"
+
+
+@pytest.mark.asyncio
+async def test_node_route_invokes_in_app_enqueue_and_merges_delivery_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Story 5.2 review P27 — ``node_route`` must call
+    ``enqueue_critical_in_app_for_decisions`` once the routing decisions
+    are resolved, forward the decisions verbatim, merge the returned
+    ``delivery_events`` onto the node's output, and extend ``errors[]``
+    with any enqueue error envelopes. This integration test closes the
+    coverage gap that per-file unit tests for the service and the node
+    individually leave open."""
+
+    async def fake_topic(_s: object) -> list[SimpleNamespace]:
+        return [_topic_row(ic="labeling")]
+
+    async def fake_sev(_s: object) -> list[SimpleNamespace]:
+        return []
+
+    monkeypatch.setattr(
+        "sentinel_prism.graph.nodes.route.routing_rules_repo.list_topic_rules_ordered",
+        fake_topic,
+    )
+    monkeypatch.setattr(
+        "sentinel_prism.graph.nodes.route.routing_rules_repo.list_severity_rules_ordered",
+        fake_sev,
+    )
+
+    enqueue_calls: dict[str, object] = {}
+
+    async def fake_enqueue(
+        *, session_factory: object, run_id: str, decisions: list[dict[str, object]]
+    ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        enqueue_calls["run_id"] = run_id
+        enqueue_calls["decisions"] = decisions
+        return (
+            [
+                {
+                    "channel": "in_app",
+                    "status": "recorded",
+                    "run_id": run_id,
+                    "rows_inserted": 1,
+                }
+            ],
+            [
+                {
+                    "step": "in_app_notifications",
+                    "message": "in_app_no_recipients",
+                    "error_class": "NoRecipients",
+                    "detail": "team_slug=other-team",
+                }
+            ],
+        )
+
+    monkeypatch.setattr(
+        "sentinel_prism.graph.nodes.route.enqueue_critical_in_app_for_decisions",
+        fake_enqueue,
+    )
+
+    run_id = uuid.uuid4()
+    st = new_pipeline_state(run_id)
+    st["classifications"] = [
+        {
+            "item_url": "https://ex/criti",
+            "in_scope": True,
+            "severity": "critical",
+            "impact_categories": ["labeling"],
+        }
+    ]
+    out = await node_route(st)
+
+    # Enqueue invoked with the resolved decisions and the run_id as str.
+    assert enqueue_calls.get("run_id") == str(run_id)
+    assert isinstance(enqueue_calls.get("decisions"), list)
+    assert len(enqueue_calls["decisions"]) == 1  # type: ignore[arg-type]
+
+    # delivery_events surfaces into the node output for LangGraph merge.
+    assert out.get("delivery_events") == [
+        {
+            "channel": "in_app",
+            "status": "recorded",
+            "run_id": str(run_id),
+            "rows_inserted": 1,
+        }
+    ]
+
+    # Enqueue errors extend ``errors[]`` alongside any routing errors.
+    errs = out.get("errors") or []
+    assert any(e.get("message") == "in_app_no_recipients" for e in errs)

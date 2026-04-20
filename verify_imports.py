@@ -21,12 +21,14 @@ def main() -> None:
     import sentinel_prism.graph.nodes.scout  # noqa: F401
     import sentinel_prism.graph.nodes.route  # noqa: F401
     import sentinel_prism.graph.nodes.normalize  # noqa: F401
+    import sentinel_prism.api.routes.notifications  # noqa: F401
     import sentinel_prism.api.routes.runs  # noqa: F401
     import sentinel_prism.graph.pipeline_audit  # noqa: F401
     import sentinel_prism.graph.pipeline_review  # noqa: F401
     import sentinel_prism.graph.retry  # noqa: F401
     import sentinel_prism.graph.routing  # noqa: F401
     import sentinel_prism.graph.tools.factory  # noqa: F401
+    import sentinel_prism.services.notifications.in_app  # noqa: F401
     import sentinel_prism.services.search.settings  # noqa: F401
     import sentinel_prism.services.llm.classification  # noqa: F401
     import sentinel_prism.services.llm.classification_retry  # noqa: F401

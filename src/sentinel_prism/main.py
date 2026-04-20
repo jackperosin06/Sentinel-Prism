@@ -8,8 +8,9 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
-from sentinel_prism.api.routes import auth, briefings, health, runs, sources
+from sentinel_prism.api.routes import auth, briefings, health, notifications, runs, sources
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,41 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Sentinel Prism", version="0.1.0", lifespan=lifespan)
+    _cors = os.environ.get("CORS_ORIGINS", "").strip()
+    if _cors:
+        cors_origins = [x.strip() for x in _cors.split(",") if x.strip()]
+    else:
+        cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+    # Browsers reject ``Access-Control-Allow-Origin: *`` alongside
+    # ``Allow-Credentials: true``, so an operator setting ``CORS_ORIGINS=*``
+    # with the previous ``allow_credentials=True`` config produced silent
+    # preflight failures in every dev-origin browser. Detect the wildcard
+    # and drop credentials instead (Bearer tokens in the auth header do not
+    # require credentialed cookies anyway — the ``Authorization`` header is
+    # not a "credential" in CORS parlance).
+    cors_allow_credentials = "*" not in cors_origins
+    if not cors_allow_credentials:
+        logger.warning(
+            "cors_wildcard_drops_credentials",
+            extra={
+                "event": "cors_config",
+                "ctx": {"origins": cors_origins, "allow_credentials": False},
+            },
+        )
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=cors_allow_credentials,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(sources.router)
     app.include_router(runs.router)
     app.include_router(runs.review_queue_router)
     app.include_router(briefings.router)
+    app.include_router(notifications.router)
     return app
 
 

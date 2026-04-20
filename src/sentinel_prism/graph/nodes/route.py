@@ -13,6 +13,7 @@ from sentinel_prism.db.repositories import audit_events as audit_events_repo
 from sentinel_prism.db.repositories import routing_rules as routing_rules_repo
 from sentinel_prism.db.session import get_session_factory
 from sentinel_prism.graph.state import AgentState
+from sentinel_prism.services.notifications.in_app import enqueue_critical_in_app_for_decisions
 from sentinel_prism.services.routing.resolve import RoutingRuleView, resolve_routing_decision
 
 logger = logging.getLogger(__name__)
@@ -172,7 +173,6 @@ async def node_route(state: AgentState) -> dict[str, Any]:
         )
         existing_urls.add(url)
 
-    out: dict[str, Any] = {"routing_decisions": decisions}
     errors: list[dict[str, Any]] = []
     if missing_url_count:
         errors.append(
@@ -183,7 +183,15 @@ async def node_route(state: AgentState) -> dict[str, Any]:
                 "detail": f"count={missing_url_count}",
             }
         )
+    delivery_events_merge: list[dict[str, Any]] = []
     if decisions:
+        dev, enqueue_errors = await enqueue_critical_in_app_for_decisions(
+            session_factory=get_session_factory(),
+            run_id=run_id,
+            decisions=decisions,
+        )
+        delivery_events_merge.extend(dev)
+        errors.extend(enqueue_errors)
         audit_extra = await _emit_routing_audit_if_needed(
             run_id=run_id,
             source_id=src_uuid,
@@ -192,6 +200,9 @@ async def node_route(state: AgentState) -> dict[str, Any]:
             skipped_duplicates=skipped,
         )
         errors.extend(audit_extra)
+    out: dict[str, Any] = {"routing_decisions": decisions}
+    if delivery_events_merge:
+        out["delivery_events"] = delivery_events_merge
     if errors:
         out["errors"] = errors
     logger.info(

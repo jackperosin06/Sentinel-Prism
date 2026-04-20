@@ -108,6 +108,14 @@ class User(Base):
         nullable=False,
         server_default=UserRole.VIEWER.value,
     )
+    #: When set, matches :attr:`RoutingRule.team_slug` for in-app alerts (Story 5.2 — FR24).
+    #: ``index=True`` mirrors the Alembic-side ``ix_users_team_slug`` so that
+    #: ``alembic --autogenerate`` does not propose dropping the index. The
+    #: equality-on-``lower(team_slug)`` query path is backed by the functional
+    #: index ``ix_users_team_slug_lower`` (see migration ``e6f7a8b9c0d1``).
+    team_slug: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -344,6 +352,65 @@ class ReviewQueueItem(Base):
     )
     items_summary: Mapped[list[dict[str, Any]]] = mapped_column(
         JSONB(none_as_null=True), nullable=False, server_default=text("'[]'::jsonb")
+    )
+
+
+class InAppNotification(Base):
+    """Per-user inbox row for routed pipeline items (Story 5.2 — FR24).
+
+    **Idempotency:** ``(run_id, item_url, user_id)`` is unique so graph retries
+    do not duplicate notifications. **Targeting:** rows are created only for
+    users whose :attr:`User.team_slug` equals the routed decision's team slug
+    and severity meets the in-app policy (``critical`` only in MVP).
+
+    **Snapshot-at-delivery semantics (code-review 2026-04-20):**
+    ``team_slug`` and ``severity`` are captured **at enqueue time** and
+    **not** re-evaluated when the user's team membership or the routing
+    rule changes later. A user who leaves a team keeps previously-delivered
+    notifications; new notifications require current membership. Read-time
+    membership filtering (if later required) would belong in the listing
+    query, not in a column mutation — the stored value preserves audit
+    fidelity for the routing decision as it was at the time of delivery.
+    """
+
+    __tablename__ = "in_app_notifications"
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id",
+            "item_url",
+            "user_id",
+            name="uq_in_app_notifications_run_item_user",
+        ),
+        Index(
+            "ix_in_app_notifications_user_created",
+            "user_id",
+            "created_at",
+            postgresql_ops={"created_at": "DESC"},
+        ),
+        Index(
+            "ix_in_app_notifications_user_unread",
+            "user_id",
+            postgresql_where=text("read_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    item_url: Mapped[str] = mapped_column(Text(), nullable=False)
+    team_slug: Mapped[str] = mapped_column(String(128), nullable=False)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    body: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
