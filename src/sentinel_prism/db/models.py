@@ -725,3 +725,60 @@ class AuditEvent(Base):
         JSONB(none_as_null=True),
         nullable=True,
     )
+
+
+class UpdateFeedbackKind(StrEnum):
+    """User correction taxonomy on classifier output (Story 7.1 — FR26)."""
+
+    INCORRECT_RELEVANCE = "incorrect_relevance"
+    INCORRECT_SEVERITY = "incorrect_severity"
+    FALSE_POSITIVE = "false_positive"
+    FALSE_NEGATIVE = "false_negative"
+
+
+class UpdateFeedback(Base):
+    """Analyst- or admin-submitted feedback on a normalized update (Story 7.1 — FR26, FR27).
+
+    ``classification_snapshot`` is the :func:`fetch_classification_overlay` result
+    (or null) *at submit time* so later briefing edits do not rewrite feedback meaning.
+    """
+
+    __tablename__ = "update_feedback"
+    __table_args__ = (
+        Index("ix_update_feedback_normalized_update_id", "normalized_update_id"),
+        Index("ix_update_feedback_user_id_created", "user_id", "created_at"),
+        Index("ix_update_feedback_run_id", "run_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    normalized_update_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("normalized_updates.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    classification_snapshot: Mapped[dict | None] = mapped_column(
+        JSONB(none_as_null=True), nullable=True
+    )
+    kind: Mapped[UpdateFeedbackKind] = mapped_column(
+        Enum(
+            UpdateFeedbackKind,
+            native_enum=False,
+            length=32,
+            values_callable=_str_enum_values,
+        ),
+        nullable=False,
+    )
+    comment: Mapped[str] = mapped_column(Text(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

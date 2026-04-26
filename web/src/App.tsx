@@ -189,7 +189,7 @@ export default function App() {
             </button>
           </p>
           <Dashboard apiBase={API_BASE} token={token} />
-          <UpdateExplorer apiBase={API_BASE} token={token} />
+          <UpdateExplorer apiBase={API_BASE} token={token} userRole={me?.role ?? null} />
           {me === null ? (
             !err ? (
               <p style={{ marginTop: "2rem" }} aria-live="polite">

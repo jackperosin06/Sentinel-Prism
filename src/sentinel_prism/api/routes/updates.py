@@ -1,4 +1,4 @@
-"""Update explorer API (Story 6.2 — FR9, FR31, FR40)."""
+"""Update explorer API (Story 6.2 — FR9, FR31, FR40; Story 7.1 — FR26, FR27)."""
 
 from __future__ import annotations
 
@@ -7,12 +7,19 @@ from datetime import datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel_prism.api.deps import require_roles
-from sentinel_prism.db.models import NormalizedUpdateRow, RawCapture, User, UserRole
+from sentinel_prism.db.models import (
+    NormalizedUpdateRow,
+    RawCapture,
+    UpdateFeedbackKind,
+    User,
+    UserRole,
+)
+from sentinel_prism.db.repositories import feedback as feedback_repo
 from sentinel_prism.db.repositories import updates as updates_repo
 from sentinel_prism.db.repositories.updates import ExplorerSort
 from sentinel_prism.db.session import get_db
@@ -103,6 +110,40 @@ class UpdateDetailOut(BaseModel):
         default=None,
         description="Populated when a matching briefing member exists.",
     )
+
+
+_MAX_FEEDBACK_COMMENT = 10_000
+
+
+class UpdateFeedbackCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: UpdateFeedbackKind
+    comment: str = Field(
+        ...,
+        min_length=1,
+        max_length=_MAX_FEEDBACK_COMMENT,
+        description="User explanation (trimmed; empty-after-trim is rejected).",
+    )
+
+    @field_validator("comment")
+    @classmethod
+    def _strip_comment(cls, v: str) -> str:
+        s = v.strip()
+        if not s:
+            raise ValueError("comment must not be empty or whitespace only")
+        return s
+
+
+class UpdateFeedbackCreatedOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: uuid.UUID
+    created_at: datetime
+    normalized_update_id: uuid.UUID
+    run_id: uuid.UUID | None
+    kind: str
+    classification_snapshot: dict[str, Any] | None = None
 
 
 @router.get("", response_model=UpdateListOut)
@@ -202,6 +243,48 @@ async def list_updates(
         offset=page.offset,
         sort=page.sort,
         default_sort=page.default_sort,
+    )
+
+
+@router.post(
+    "/{normalized_update_id}/feedback",
+    response_model=UpdateFeedbackCreatedOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def post_update_feedback(
+    normalized_update_id: uuid.UUID,
+    body: UpdateFeedbackCreate,
+    current: User = Depends(require_roles(UserRole.ANALYST, UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+) -> UpdateFeedbackCreatedOut:
+    row = await db.scalar(
+        select(NormalizedUpdateRow).where(NormalizedUpdateRow.id == normalized_update_id)
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Update not found")
+
+    overlay = await updates_repo.fetch_classification_overlay(
+        db,
+        run_id=row.run_id,
+        normalized_update_id=row.id,
+    )
+    created = await feedback_repo.insert_feedback(
+        db,
+        user_id=current.id,
+        normalized_update_id=row.id,
+        run_id=row.run_id,
+        classification_snapshot=overlay,
+        kind=body.kind,
+        comment=body.comment,
+    )
+    await db.commit()
+    return UpdateFeedbackCreatedOut(
+        id=created.id,
+        created_at=created.created_at,
+        normalized_update_id=created.normalized_update_id,
+        run_id=created.run_id,
+        kind=created.kind.value,
+        classification_snapshot=created.classification_snapshot,
     )
 
 
