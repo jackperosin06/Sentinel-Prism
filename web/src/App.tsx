@@ -1,6 +1,8 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import { Dashboard } from "./components/Dashboard";
+import { RoutingRulesAdmin } from "./components/RoutingRulesAdmin";
+import { UpdateExplorer } from "./components/UpdateExplorer";
 import { readErrorMessage } from "./httpErrors";
 
 const TOKEN_KEY = "sentinel_prism_token";
@@ -34,17 +36,26 @@ type NotificationListResponse = {
   has_more: boolean;
 };
 
+type MeResponse = {
+  id: string;
+  email: string;
+  role: string;
+  is_active: boolean;
+};
+
 export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [token, setToken] = useState<string>(() => readStoredToken());
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [err, setErr] = useState<string | null>(null);
+  const [me, setMe] = useState<MeResponse | null>(null);
 
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
     setToken("");
     setItems([]);
+    setMe(null);
   }, []);
 
   async function login(e: FormEvent) {
@@ -69,27 +80,41 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      setMe(null);
+      setItems([]);
+      return;
+    }
     const ctrl = new AbortController();
     (async () => {
       setErr(null);
       try {
-        const r = await fetch(`${API_BASE}/notifications`, {
-          headers: { Authorization: `Bearer ${token}` },
-          signal: ctrl.signal,
-        });
-        if (r.status === 401) {
-          // Token expired or revoked — clear it so the user sees the login
-          // form instead of an empty list with a cryptic error blob.
+        const [notifR, meR] = await Promise.all([
+          fetch(`${API_BASE}/notifications`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: ctrl.signal,
+          }),
+          fetch(`${API_BASE}/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` },
+            signal: ctrl.signal,
+          }),
+        ]);
+        if (notifR.status === 401 || meR.status === 401) {
           setErr("Session expired. Please log in again.");
           logout();
           return;
         }
-        if (!r.ok) {
-          setErr(await readErrorMessage(r));
+        if (!meR.ok) {
+          setErr(await readErrorMessage(meR));
+          setMe(null);
           return;
         }
-        const j = (await r.json()) as NotificationListResponse;
+        setMe((await meR.json()) as MeResponse);
+        if (!notifR.ok) {
+          setErr(await readErrorMessage(notifR));
+          return;
+        }
+        const j = (await notifR.json()) as NotificationListResponse;
         setItems(j.items);
       } catch (e) {
         if ((e as { name?: string }).name === "AbortError") return;
@@ -126,11 +151,14 @@ export default function App() {
   }
 
   return (
-    <main style={{ fontFamily: "system-ui", maxWidth: 960, margin: "2rem auto", padding: 16 }}>
+    <main style={{ fontFamily: "system-ui", maxWidth: 1200, margin: "2rem auto", padding: 16 }}>
       <h1>Sentinel Prism</h1>
       {!token ? (
         <form onSubmit={login}>
-          <p>Log in to open the analyst console (dashboard and notifications).</p>
+          <p>
+            Log in to open the analyst console (dashboard, explorer, notifications; admins also
+            manage routing rules).
+          </p>
           <p style={{ fontSize: "0.9rem", color: "#444" }}>
             API base: {API_BASE} (set <code>VITE_API_URL</code> if needed).
           </p>
@@ -161,6 +189,23 @@ export default function App() {
             </button>
           </p>
           <Dashboard apiBase={API_BASE} token={token} />
+          <UpdateExplorer apiBase={API_BASE} token={token} />
+          {me === null ? (
+            !err ? (
+              <p style={{ marginTop: "2rem" }} aria-live="polite">
+                Loading account…
+              </p>
+            ) : null
+          ) : me.role === "admin" ? (
+            <RoutingRulesAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
+          ) : (
+            <section style={{ marginTop: "2rem", color: "#555" }}>
+              <p>
+                Signed in as <strong>{me.email}</strong> ({me.role}). Routing rule administration
+                is available to admin accounts only.
+              </p>
+            </section>
+          )}
           <h2 style={{ marginTop: "2rem" }}>Notifications</h2>
           <p style={{ fontSize: "0.9rem", color: "#444" }}>
             In-app inbox (Story 5.2); critical routed items for your team.

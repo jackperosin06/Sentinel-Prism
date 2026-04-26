@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sentinel_prism.db.audit_constants import ROUTING_CONFIG_AUDIT_RUN_ID
 from sentinel_prism.db.models import AuditEvent, PipelineAuditAction
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,38 @@ async def append_audit_event(
     session.add(row)
     await session.flush()
     return row.id
+
+
+async def append_routing_config_audit(
+    session: AsyncSession,
+    *,
+    actor_user_id: uuid.UUID,
+    op: str,
+    rule_id: uuid.UUID,
+    rule_type: str,
+    metadata: dict[str, Any] | None = None,
+) -> uuid.UUID | None:
+    """Append a routing mock-table config audit row (Story 6.3 — FR33).
+
+    Uses :data:`~sentinel_prism.db.audit_constants.ROUTING_CONFIG_AUDIT_RUN_ID`
+    for ``run_id`` because configuration changes are not tied to a pipeline run.
+    """
+
+    meta: dict[str, Any] = {
+        "op": op,
+        "rule_id": str(rule_id),
+        "rule_type": rule_type,
+    }
+    if metadata:
+        meta.update(metadata)
+    return await append_audit_event(
+        session,
+        run_id=ROUTING_CONFIG_AUDIT_RUN_ID,
+        action=PipelineAuditAction.ROUTING_CONFIG_CHANGED,
+        source_id=None,
+        metadata=meta,
+        actor_user_id=actor_user_id,
+    )
 
 
 async def list_recent_for_run(

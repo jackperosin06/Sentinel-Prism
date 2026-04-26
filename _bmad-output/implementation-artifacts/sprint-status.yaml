@@ -1,5 +1,5 @@
 # generated: 2026-04-12T12:00:00Z
-# last_updated: 2026-04-20T19:00:00Z
+# last_updated: 2026-04-26T11:30:00Z
 # project: Sentinel Prism
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-20T20:30:00Z"
+last_updated: "2026-04-26T11:30:00Z"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -76,18 +76,18 @@ development_status:
   4-3-briefing-generation-and-grouping: done
   epic-4-retrospective: optional
 
-  epic-5: in-progress
-  5-1-routing-rules-engine: review
-  5-2-in-app-notifications: review
-  5-3-external-channel-email-or-slack-sandbox-with-delivery-log: review
-  5-4-immediate-vs-digest-scheduling: in-progress
+  epic-5: done
+  5-1-routing-rules-engine: done
+  5-2-in-app-notifications: done
+  5-3-external-channel-email-or-slack-sandbox-with-delivery-log: done
+  5-4-immediate-vs-digest-scheduling: done
   5-5-regulatory-filing-guardrail: done
   epic-5-retrospective: optional
 
   epic-6: in-progress
   6-1-overview-dashboard-widgets: done
-  6-2-update-explorer-with-filters-and-detail-side-by-side: backlog
-  6-3-admin-routing-and-escalation-table-management-ui: backlog
+  6-2-update-explorer-with-filters-and-detail-side-by-side: done
+  6-3-admin-routing-and-escalation-table-management-ui: done
   epic-6-retrospective: optional
 
   epic-7: backlog

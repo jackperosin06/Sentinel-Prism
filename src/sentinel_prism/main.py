@@ -17,8 +17,10 @@ from sentinel_prism.api.routes import (
     delivery_attempts,
     health,
     notifications,
+    routing_rules,
     runs,
     sources,
+    updates,
 )
 
 logger = logging.getLogger(__name__)
@@ -130,6 +132,7 @@ def create_app() -> FastAPI:
     )
     app.include_router(health.router)
     app.include_router(dashboard.router)
+    app.include_router(updates.router)
     app.include_router(auth.router)
     app.include_router(sources.router)
     app.include_router(runs.router)
@@ -137,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(briefings.router)
     app.include_router(notifications.router)
     app.include_router(delivery_attempts.router)
+    app.include_router(routing_rules.router)
     return app
 
 

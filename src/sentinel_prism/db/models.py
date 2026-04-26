@@ -100,6 +100,9 @@ class PipelineAuditAction(StrEnum):
     HUMAN_REVIEW_OVERRIDDEN = "human_review_overridden"
     BRIEFING_GENERATED = "briefing_generated"
     ROUTING_APPLIED = "routing_applied"
+    #: Admin UI mutations to ``routing_rules`` (Story 6.3 — FR33); uses
+    #: :data:`~sentinel_prism.db.audit_constants.ROUTING_CONFIG_AUDIT_RUN_ID`.
+    ROUTING_CONFIG_CHANGED = "routing_config_changed"
 
 
 class Base(DeclarativeBase):
