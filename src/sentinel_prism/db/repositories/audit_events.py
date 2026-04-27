@@ -11,7 +11,10 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sentinel_prism.db.audit_constants import ROUTING_CONFIG_AUDIT_RUN_ID
+from sentinel_prism.db.audit_constants import (
+    CLASSIFICATION_CONFIG_AUDIT_RUN_ID,
+    ROUTING_CONFIG_AUDIT_RUN_ID,
+)
 from sentinel_prism.db.models import AuditEvent, PipelineAuditAction
 
 logger = logging.getLogger(__name__)
@@ -162,6 +165,45 @@ async def append_routing_config_audit(
         session,
         run_id=ROUTING_CONFIG_AUDIT_RUN_ID,
         action=PipelineAuditAction.ROUTING_CONFIG_CHANGED,
+        source_id=None,
+        metadata=meta,
+        actor_user_id=actor_user_id,
+    )
+
+
+async def append_classification_config_audit(
+    session: AsyncSession,
+    *,
+    actor_user_id: uuid.UUID,
+    prior_version: int,
+    new_version: int,
+    prior_threshold: float,
+    new_threshold: float,
+    prior_prompt_sha256_prefix: str,
+    new_prompt_sha256_prefix: str,
+    prior_prompt_length: int,
+    new_prompt_length: int,
+    reason: str | None,
+) -> uuid.UUID | None:
+    """Append classification policy apply audit (Story 7.3 — FR29, NFR13)."""
+
+    meta: dict[str, Any] = {
+        "op": "apply",
+        "prior_version": prior_version,
+        "new_version": new_version,
+        "prior_low_confidence_threshold": prior_threshold,
+        "new_low_confidence_threshold": new_threshold,
+        "prior_system_prompt_sha256_16": prior_prompt_sha256_prefix,
+        "new_system_prompt_sha256_16": new_prompt_sha256_prefix,
+        "prior_system_prompt_length": prior_prompt_length,
+        "new_system_prompt_length": new_prompt_length,
+    }
+    if reason is not None:
+        meta["reason"] = reason
+    return await append_audit_event(
+        session,
+        run_id=CLASSIFICATION_CONFIG_AUDIT_RUN_ID,
+        action=PipelineAuditAction.CLASSIFICATION_CONFIG_CHANGED,
         source_id=None,
         metadata=meta,
         actor_user_id=actor_user_id,

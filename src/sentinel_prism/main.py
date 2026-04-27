@@ -13,8 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from sentinel_prism.api.routes import (
     auth,
     briefings,
+    classification_policy,
     dashboard,
     delivery_attempts,
+    feedback_metrics,
     health,
     notifications,
     routing_rules,
@@ -141,6 +143,8 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router)
     app.include_router(delivery_attempts.router)
     app.include_router(routing_rules.router)
+    app.include_router(feedback_metrics.router)
+    app.include_router(classification_policy.router)
     return app
 
 

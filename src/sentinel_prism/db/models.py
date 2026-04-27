@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -103,6 +104,8 @@ class PipelineAuditAction(StrEnum):
     #: Admin UI mutations to ``routing_rules`` (Story 6.3 — FR33); uses
     #: :data:`~sentinel_prism.db.audit_constants.ROUTING_CONFIG_AUDIT_RUN_ID`.
     ROUTING_CONFIG_CHANGED = "routing_config_changed"
+    #: Admin apply of classification threshold / system prompt (Story 7.3 — FR29).
+    CLASSIFICATION_CONFIG_CHANGED = "classification_config_changed"
 
 
 class Base(DeclarativeBase):
@@ -627,6 +630,51 @@ class RoutingRule(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class ClassificationPolicy(Base):
+    """Singleton classification governance row (Story 7.3 — FR29).
+
+    Exactly one logical row ``id = 1`` holds the **active** threshold and system
+    prompt used by ``node_classify``, plus optional **draft** fields that do not
+    affect runs until :func:`~sentinel_prism.db.repositories.classification_policy.apply_draft`.
+    """
+
+    __tablename__ = "classification_policy"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_classification_policy_singleton_id"),
+        CheckConstraint("version >= 1", name="ck_classification_policy_version_ge_1"),
+        CheckConstraint(
+            "low_confidence_threshold >= 0 AND low_confidence_threshold <= 1",
+            name="ck_classification_policy_threshold_range",
+        ),
+        CheckConstraint(
+            "length(trim(system_prompt)) > 0 AND length(system_prompt) <= 32768",
+            name="ck_classification_policy_prompt_valid",
+        ),
+        CheckConstraint(
+            "draft_low_confidence_threshold IS NULL OR "
+            "(draft_low_confidence_threshold >= 0 "
+            "AND draft_low_confidence_threshold <= 1)",
+            name="ck_classification_policy_draft_threshold_range",
+        ),
+        CheckConstraint(
+            "draft_system_prompt IS NULL OR "
+            "(length(trim(draft_system_prompt)) > 0 "
+            "AND length(draft_system_prompt) <= 32768)",
+            name="ck_classification_policy_draft_prompt_valid",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    low_confidence_threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    draft_low_confidence_threshold: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
+    draft_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Briefing(Base):

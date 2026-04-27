@@ -9,6 +9,8 @@ from collections import OrderedDict
 from typing import Any, Mapping
 
 from sentinel_prism.db.models import PipelineAuditAction
+from sentinel_prism.db.repositories import classification_policy as classification_policy_repo
+from sentinel_prism.db.session import get_session_factory
 from sentinel_prism.graph.tools.context_format import format_web_context_for_llm
 from sentinel_prism.graph.tools.factory import create_web_search_tool
 from sentinel_prism.graph.tools.query_builder import build_public_web_search_query
@@ -16,6 +18,8 @@ from sentinel_prism.graph.tools.types import SearchToolProtocol
 from sentinel_prism.graph.pipeline_audit import record_pipeline_audit_event
 from sentinel_prism.graph.state import AgentState
 from sentinel_prism.services.llm.classification import (
+    CLASSIFICATION_SYSTEM_PROMPT,
+    LOW_CONFIDENCE_THRESHOLD,
     build_classification_llm,
     classification_dict_for_llm_error,
     classification_dict_for_state,
@@ -74,6 +78,17 @@ def _severity_histogram_from_classifications(
             key = "other"
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+async def _load_active_classification_policy() -> tuple[float, str]:
+    """One DB read per classify invocation — falls back to module defaults."""
+
+    factory = get_session_factory()
+    async with factory() as session:
+        active = await classification_policy_repo.get_active_runtime(session)
+    if active is None:
+        return LOW_CONFIDENCE_THRESHOLD, CLASSIFICATION_SYSTEM_PROMPT
+    return active.low_confidence_threshold, active.system_prompt
 
 
 def _safe_error_detail(exc: BaseException, *, limit: int = 200) -> str:
@@ -170,6 +185,10 @@ async def node_classify(
     web_search_cache_hits = 0
     run_id_str = str(run_id)
 
+    low_confidence_threshold, classification_system_prompt = (
+        await _load_active_classification_policy()
+    )
+
     for item in norms:
         if not isinstance(item, Mapping):
             err_accum.append(
@@ -191,6 +210,7 @@ async def node_classify(
                     normalized=normalized,
                     rule_outcome=rule_outcome,
                     llm=None,
+                    low_confidence_threshold=low_confidence_threshold,
                 )
             )
             continue
@@ -268,6 +288,7 @@ async def node_classify(
                 model_id=model_id,
                 prompt_version=prompt_version,
                 web_context=web_context,
+                system_prompt=classification_system_prompt,
             )
         except Exception as exc:
             if is_transient_classification_error(exc):
@@ -337,6 +358,7 @@ async def node_classify(
             normalized=normalized,
             rule_outcome=rule_outcome,
             llm=llm_out,
+            low_confidence_threshold=low_confidence_threshold,
         )
         classifications.append(row)
         llm_success_count += 1

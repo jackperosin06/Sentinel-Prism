@@ -82,6 +82,7 @@ def classification_dict_for_state(
     normalized: dict[str, Any],
     rule_outcome: RuleOutcome,
     llm: StructuredClassification | None,
+    low_confidence_threshold: float | None = None,
 ) -> dict[str, Any]:
     """Build one checkpoint-safe classification dict (AC #1).
 
@@ -117,7 +118,12 @@ def classification_dict_for_state(
             "pass the structured LLM output or use classification_dict_for_llm_error"
         )
 
-    needs = llm.confidence < LOW_CONFIDENCE_THRESHOLD or llm.severity == "critical"
+    th = (
+        LOW_CONFIDENCE_THRESHOLD
+        if low_confidence_threshold is None
+        else low_confidence_threshold
+    )
+    needs = llm.confidence < th or llm.severity == "critical"
     base.update(
         {
             "severity": llm.severity,
@@ -170,6 +176,7 @@ class ClassificationLLM(Protocol):
         model_id: str,
         prompt_version: str,
         web_context: str | None = None,
+        system_prompt: str | None = None,
     ) -> StructuredClassification: ...
 
 
@@ -186,8 +193,9 @@ class StubClassificationLLM:
         model_id: str,
         prompt_version: str,
         web_context: str | None = None,
+        system_prompt: str | None = None,
     ) -> StructuredClassification:
-        _ = normalized, model_id, prompt_version, web_context
+        _ = normalized, model_id, prompt_version, web_context, system_prompt
         return StructuredClassification(
             severity="medium",
             impact_categories=["labeling"],
@@ -216,10 +224,16 @@ class LangChainStructuredClassificationLlm:
         model_id: str,
         prompt_version: str,
         web_context: str | None = None,
+        system_prompt: str | None = None,
     ) -> StructuredClassification:
         _ = model_id, prompt_version
+        sys_content = (
+            CLASSIFICATION_SYSTEM_PROMPT
+            if system_prompt is None or not str(system_prompt).strip()
+            else system_prompt
+        )
         messages = [
-            SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
+            SystemMessage(content=sys_content),
             HumanMessage(
                 content=format_classification_user_message(
                     normalized, web_context=web_context

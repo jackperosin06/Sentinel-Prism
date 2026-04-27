@@ -1,6 +1,8 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
+import { ClassificationPolicyAdmin } from "./components/ClassificationPolicyAdmin";
 import { Dashboard } from "./components/Dashboard";
+import { FeedbackMetricsAdmin } from "./components/FeedbackMetricsAdmin";
 import { RoutingRulesAdmin } from "./components/RoutingRulesAdmin";
 import { UpdateExplorer } from "./components/UpdateExplorer";
 import { readErrorMessage } from "./httpErrors";
@@ -197,7 +199,11 @@ export default function App() {
               </p>
             ) : null
           ) : me.role === "admin" ? (
-            <RoutingRulesAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
+            <>
+              <FeedbackMetricsAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
+              <ClassificationPolicyAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
+              <RoutingRulesAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
+            </>
           ) : (
             <section style={{ marginTop: "2rem", color: "#555" }}>
               <p>

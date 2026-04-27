@@ -124,15 +124,15 @@ SELECT
   ) AS derived_severity
 FROM normalized_updates n
 WHERE
-  (:created_from IS NULL OR n.created_at >= :created_from)
-  AND (:created_to IS NULL OR n.created_at <= :created_to)
-  AND (:published_from IS NULL OR n.published_at >= :published_from)
-  AND (:published_to IS NULL OR n.published_at <= :published_to)
-  AND (:jurisdiction IS NULL OR n.jurisdiction = :jurisdiction)
-  AND (:source_id IS NULL OR n.source_id = :source_id)
-  AND (:source_name IS NULL OR n.source_name ILIKE :source_name ESCAPE '\\')
-  AND (:document_type IS NULL OR n.document_type = :document_type)
-  AND (:explorer_status IS NULL OR
+  (CAST(:created_from AS timestamptz) IS NULL OR n.created_at >= CAST(:created_from AS timestamptz))
+  AND (CAST(:created_to AS timestamptz) IS NULL OR n.created_at <= CAST(:created_to AS timestamptz))
+  AND (CAST(:published_from AS timestamptz) IS NULL OR n.published_at >= CAST(:published_from AS timestamptz))
+  AND (CAST(:published_to AS timestamptz) IS NULL OR n.published_at <= CAST(:published_to AS timestamptz))
+  AND (CAST(:jurisdiction AS text) IS NULL OR n.jurisdiction = CAST(:jurisdiction AS text))
+  AND (CAST(:source_id AS uuid) IS NULL OR n.source_id = CAST(:source_id AS uuid))
+  AND (CAST(:source_name AS text) IS NULL OR n.source_name ILIKE CAST(:source_name AS text) ESCAPE '\\')
+  AND (CAST(:document_type AS text) IS NULL OR n.document_type = CAST(:document_type AS text))
+  AND (CAST(:explorer_status AS text) IS NULL OR
     CASE
       WHEN EXISTS (
         SELECT 1 FROM review_queue_items r WHERE r.run_id = n.run_id
@@ -141,7 +141,7 @@ WHERE
         SELECT 1 FROM briefings b2 WHERE b2.run_id = n.run_id
       ) THEN 'briefed'
       ELSE 'processed'
-    END = :explorer_status
+    END = CAST(:explorer_status AS text)
   )
 """
 

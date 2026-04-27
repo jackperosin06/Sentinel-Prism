@@ -36,6 +36,7 @@ _GRAPH_DB_STUBBED_MODULES = frozenset(
         "test_graph_scout_normalize.py",
         "test_graph_shell.py",
         "test_graph_route.py",
+        "test_web_search_tool.py",
     }
 )
 
@@ -255,6 +256,30 @@ def _mock_route_db_session_factory(
     monkeypatch.setattr(
         "sentinel_prism.graph.nodes.route.get_session_factory",
         _route_graph_db_factory(),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _stub_classification_policy_load_for_graph_tests(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Graph classify loads DB-backed policy; unit tests use code defaults."""
+
+    if not _should_stub_graph_db(request):
+        return
+
+    async def _defaults() -> tuple[float, str]:
+        from sentinel_prism.services.llm.classification import (
+            CLASSIFICATION_SYSTEM_PROMPT,
+            LOW_CONFIDENCE_THRESHOLD,
+        )
+
+        return LOW_CONFIDENCE_THRESHOLD, CLASSIFICATION_SYSTEM_PROMPT
+
+    monkeypatch.setattr(
+        "sentinel_prism.graph.nodes.classify._load_active_classification_policy",
+        _defaults,
     )
 
 
