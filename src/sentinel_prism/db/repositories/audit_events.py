@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel_prism.db.audit_constants import (
     CLASSIFICATION_CONFIG_AUDIT_RUN_ID,
+    GOLDEN_SET_CONFIG_AUDIT_RUN_ID,
     ROUTING_CONFIG_AUDIT_RUN_ID,
 )
 from sentinel_prism.db.models import AuditEvent, PipelineAuditAction
@@ -204,6 +205,49 @@ async def append_classification_config_audit(
         session,
         run_id=CLASSIFICATION_CONFIG_AUDIT_RUN_ID,
         action=PipelineAuditAction.CLASSIFICATION_CONFIG_CHANGED,
+        source_id=None,
+        metadata=meta,
+        actor_user_id=actor_user_id,
+    )
+
+
+async def append_golden_set_config_audit(
+    session: AsyncSession,
+    *,
+    actor_user_id: uuid.UUID,
+    prior_version: int,
+    new_version: int,
+    prior_refresh_cadence: str,
+    new_refresh_cadence: str,
+    prior_refresh_after_major: bool,
+    new_refresh_after_major: bool,
+    prior_label_sha256_prefix: str,
+    new_label_sha256_prefix: str,
+    prior_label_length: int,
+    new_label_length: int,
+    reason: str | None,
+) -> uuid.UUID | None:
+    """Append golden-set policy apply audit (Story 7.4 — FR45, NFR13)."""
+
+    meta: dict[str, Any] = {
+        "op": "apply",
+        "prior_version": prior_version,
+        "new_version": new_version,
+        "prior_refresh_cadence": prior_refresh_cadence,
+        "new_refresh_cadence": new_refresh_cadence,
+        "prior_refresh_after_major_classification_change": prior_refresh_after_major,
+        "new_refresh_after_major_classification_change": new_refresh_after_major,
+        "prior_label_policy_sha256_16": prior_label_sha256_prefix,
+        "new_label_policy_sha256_16": new_label_sha256_prefix,
+        "prior_label_policy_length": prior_label_length,
+        "new_label_policy_length": new_label_length,
+    }
+    if reason is not None:
+        meta["reason"] = reason
+    return await append_audit_event(
+        session,
+        run_id=GOLDEN_SET_CONFIG_AUDIT_RUN_ID,
+        action=PipelineAuditAction.GOLDEN_SET_CONFIG_CHANGED,
         source_id=None,
         metadata=meta,
         actor_user_id=actor_user_id,

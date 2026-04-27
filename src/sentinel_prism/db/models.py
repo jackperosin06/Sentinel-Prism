@@ -36,6 +36,12 @@ class UserRole(StrEnum):
     VIEWER = "viewer"
 
 
+class GoldenSetRefreshCadence(StrEnum):
+    """Golden-set eval refresh intent (Story 7.4 — FR44/FR45)."""
+
+    QUARTERLY = "quarterly"
+
+
 class SourceType(StrEnum):
     """Public regulatory source connector kind (Story 2.1)."""
 
@@ -106,6 +112,8 @@ class PipelineAuditAction(StrEnum):
     ROUTING_CONFIG_CHANGED = "routing_config_changed"
     #: Admin apply of classification threshold / system prompt (Story 7.3 — FR29).
     CLASSIFICATION_CONFIG_CHANGED = "classification_config_changed"
+    #: Admin apply of golden-set / evaluation label policy (Story 7.4 — FR44, FR45).
+    GOLDEN_SET_CONFIG_CHANGED = "golden_set_config_changed"
 
 
 class Base(DeclarativeBase):
@@ -674,6 +682,51 @@ class ClassificationPolicy(Base):
         Float, nullable=True
     )
     draft_system_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class GoldenSetPolicy(Base):
+    """Singleton golden-set label policy + eval cadence (Story 7.4 — FR44, FR45).
+
+    Row ``id = 1`` holds **active** policy used for evaluation governance, plus
+    optional **draft** fields. Draft does not affect reads until
+    :func:`~sentinel_prism.db.repositories.golden_set_policy.apply_draft`.
+    """
+
+    __tablename__ = "golden_set_policy"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_golden_set_policy_singleton_id"),
+        CheckConstraint("version >= 1", name="ck_golden_set_policy_version_ge_1"),
+        CheckConstraint(
+            "length(trim(label_policy_text)) > 0 AND length(label_policy_text) <= 32768",
+            name="ck_golden_set_policy_label_valid",
+        ),
+        CheckConstraint(
+            "refresh_cadence IN ('quarterly')",
+            name="ck_golden_set_policy_cadence_quarterly_only",
+        ),
+        CheckConstraint(
+            "draft_label_policy_text IS NULL OR "
+            "(length(trim(draft_label_policy_text)) > 0 "
+            "AND length(draft_label_policy_text) <= 32768)",
+            name="ck_golden_set_policy_draft_label_valid",
+        ),
+        CheckConstraint(
+            "draft_refresh_cadence IS NULL OR draft_refresh_cadence IN ('quarterly')",
+            name="ck_golden_set_policy_draft_cadence",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    label_policy_text: Mapped[str] = mapped_column(Text, nullable=False)
+    refresh_cadence: Mapped[str] = mapped_column(String(32), nullable=False)
+    refresh_after_major_classification_change: Mapped[bool] = mapped_column(
+        Boolean, nullable=False
+    )
+    draft_label_policy_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_refresh_cadence: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    draft_refresh_after_major: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     draft_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 

@@ -17,6 +17,7 @@ from sentinel_prism.api.routes import (
     dashboard,
     delivery_attempts,
     feedback_metrics,
+    golden_set_policy,
     health,
     notifications,
     routing_rules,
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(routing_rules.router)
     app.include_router(feedback_metrics.router)
     app.include_router(classification_policy.router)
+    app.include_router(golden_set_policy.router)
     return app
 
 

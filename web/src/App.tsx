@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
 import { ClassificationPolicyAdmin } from "./components/ClassificationPolicyAdmin";
+import { GoldenSetPolicyAdmin } from "./components/GoldenSetPolicyAdmin";
 import { Dashboard } from "./components/Dashboard";
 import { FeedbackMetricsAdmin } from "./components/FeedbackMetricsAdmin";
 import { RoutingRulesAdmin } from "./components/RoutingRulesAdmin";
@@ -201,6 +202,7 @@ export default function App() {
           ) : me.role === "admin" ? (
             <>
               <FeedbackMetricsAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
+              <GoldenSetPolicyAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
               <ClassificationPolicyAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
               <RoutingRulesAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
             </>
