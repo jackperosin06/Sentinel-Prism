@@ -1,260 +1,141 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { Login } from "./pages/Login";
+import { Sidebar } from "./components/Sidebar";
+import { CommandCentre } from "./pages/CommandCentre";
+import { Updates } from "./pages/Updates";
+import { ReviewQueue } from "./pages/ReviewQueue";
+import { Briefings } from "./pages/Briefings";
+import { Sources } from "./pages/Sources";
+import { Settings } from "./pages/Settings";
 
-import { AuditEventSearch } from "./components/AuditEventSearch";
-import { ClassificationPolicyAdmin } from "./components/ClassificationPolicyAdmin";
-import { GoldenSetPolicyAdmin } from "./components/GoldenSetPolicyAdmin";
-import { Dashboard } from "./components/Dashboard";
-import { FeedbackMetricsAdmin } from "./components/FeedbackMetricsAdmin";
-import { OpsDashboard } from "./components/OpsDashboard";
-import { RoutingRulesAdmin } from "./components/RoutingRulesAdmin";
-import { UpdateExplorer } from "./components/UpdateExplorer";
-import { RunReplay } from "./components/RunReplay";
-import { readErrorMessage } from "./httpErrors";
+export const TOKEN_KEY = "sentinel_prism_token";
+export const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
 
-const TOKEN_KEY = "sentinel_prism_token";
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:8000";
+const INVALID = new Set(["", "null", "undefined"]);
 
-// Strings we must treat as "no token" even though they are technically
-// non-null — these come from prior bad writes (e.g. ``JSON.stringify(null)``)
-// and would otherwise stick the UI in ``Authorization: Bearer null``.
-const INVALID_TOKEN_VALUES = new Set(["", "null", "undefined"]);
-
-function readStoredToken(): string {
-  const raw = localStorage.getItem(TOKEN_KEY);
-  if (raw === null) return "";
-  return INVALID_TOKEN_VALUES.has(raw) ? "" : raw;
+export function readToken(): string {
+  const raw = localStorage.getItem(TOKEN_KEY) ?? "";
+  return INVALID.has(raw) ? "" : raw;
 }
 
-type NotificationItem = {
-  id: string;
-  run_id: string;
-  item_url: string;
-  team_slug: string;
-  severity: string;
-  title: string;
-  body: string | null;
-  read_at: string | null;
-  created_at: string;
-};
-
-type NotificationListResponse = {
-  items: NotificationItem[];
-  has_more: boolean;
-};
-
-type MeResponse = {
+export type MeResponse = {
   id: string;
   email: string;
   role: string;
   is_active: boolean;
 };
 
-function canViewOps(role: string | null): boolean {
-  return role === "admin" || role === "analyst";
+export type AuthCtx = {
+  token: string;
+  me: MeResponse | null;
+  logout: () => void;
+  apiBase: string;
+};
+
+export const AuthContext = createContext<AuthCtx>(null!);
+export const useAuth = () => useContext(AuthContext);
+
+export async function readErrorMessage(r: Response): Promise<string> {
+  try {
+    const ct = r.headers.get("content-type") ?? "";
+    if (ct.includes("application/json")) {
+      const j = (await r.json()) as { detail?: string | { msg?: string }[] };
+      if (typeof j.detail === "string") return j.detail;
+      if (Array.isArray(j.detail) && j.detail[0]?.msg) return j.detail[0].msg;
+    }
+  } catch { /* fall through */ }
+  return `Request failed (${r.status} ${r.statusText})`;
+}
+
+function useHashPath(): [string, (to: string) => void] {
+  const [path, setPath] = useState(() => window.location.hash.replace(/^#/, "") || "/");
+  useEffect(() => {
+    const handler = () => setPath(window.location.hash.replace(/^#/, "") || "/");
+    window.addEventListener("hashchange", handler);
+    return () => window.removeEventListener("hashchange", handler);
+  }, []);
+  const navigate = (to: string) => { window.location.hash = to; };
+  return [path, navigate];
 }
 
 export default function App() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [token, setToken] = useState<string>(() => readStoredToken());
-  const [items, setItems] = useState<NotificationItem[]>([]);
-  const [err, setErr] = useState<string | null>(null);
+  const [token, setToken] = useState<string>(() => readToken());
   const [me, setMe] = useState<MeResponse | null>(null);
+  const [reviewCount, setReviewCount] = useState(0);
+  const [path, navigate] = useHashPath();
 
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY);
     setToken("");
-    setItems([]);
     setMe(null);
+    setReviewCount(0);
   }, []);
 
-  async function login(e: FormEvent) {
-    e.preventDefault();
-    setErr(null);
-    try {
-      const r = await fetch(`${API_BASE}/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!r.ok) {
-        setErr(await readErrorMessage(r));
-        return;
-      }
-      const j = (await r.json()) as { access_token: string };
-      localStorage.setItem(TOKEN_KEY, j.access_token);
-      setToken(j.access_token);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : "Network error during login.");
-    }
+  function handleLogin(accessToken: string) {
+    localStorage.setItem(TOKEN_KEY, accessToken);
+    setToken(accessToken);
   }
 
   useEffect(() => {
-    if (!token) {
-      setMe(null);
-      setItems([]);
-      return;
-    }
+    if (!token) { setMe(null); return; }
     const ctrl = new AbortController();
     (async () => {
-      setErr(null);
       try {
-        const [notifR, meR] = await Promise.all([
-          fetch(`${API_BASE}/notifications`, {
-            headers: { Authorization: `Bearer ${token}` },
-            signal: ctrl.signal,
-          }),
-          fetch(`${API_BASE}/auth/me`, {
-            headers: { Authorization: `Bearer ${token}` },
-            signal: ctrl.signal,
-          }),
-        ]);
-        if (notifR.status === 401 || meR.status === 401) {
-          setErr("Session expired. Please log in again.");
-          logout();
-          return;
-        }
-        if (!meR.ok) {
-          setErr(await readErrorMessage(meR));
-          setMe(null);
-          return;
-        }
-        setMe((await meR.json()) as MeResponse);
-        if (!notifR.ok) {
-          setErr(await readErrorMessage(notifR));
-          return;
-        }
-        const j = (await notifR.json()) as NotificationListResponse;
-        setItems(j.items);
-      } catch (e) {
-        if ((e as { name?: string }).name === "AbortError") return;
-        setErr(
-          e instanceof Error ? e.message : "Network error loading notifications."
-        );
-      }
+        const r = await fetch(`${API_BASE}/auth/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ctrl.signal,
+        });
+        if (r.status === 401) { logout(); return; }
+        if (r.ok) setMe((await r.json()) as MeResponse);
+      } catch { /* ignore */ }
     })();
     return () => ctrl.abort();
   }, [token, logout]);
 
-  async function markRead(id: string) {
-    try {
-      const r = await fetch(`${API_BASE}/notifications/${id}/read`, {
-        method: "PATCH",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (r.status === 204) {
-        const ts = new Date().toISOString();
-        setItems((xs) => xs.map((i) => (i.id === id ? { ...i, read_at: ts } : i)));
-        return;
-      }
-      if (r.status === 401) {
-        setErr("Session expired. Please log in again.");
-        logout();
-        return;
-      }
-      setErr(await readErrorMessage(r));
-    } catch (e) {
-      setErr(
-        e instanceof Error ? e.message : "Network error marking notification read."
-      );
+  useEffect(() => {
+    if (!token) { setReviewCount(0); return; }
+    const ctrl = new AbortController();
+    const load = async () => {
+      try {
+        const r = await fetch(`${API_BASE}/dashboard/summary`, {
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ctrl.signal,
+        });
+        if (r.ok) {
+          const j = (await r.json()) as { review_queue_count?: number };
+          setReviewCount(j.review_queue_count ?? 0);
+        }
+      } catch { /* ignore */ }
+    };
+    void load();
+    const id = setInterval(() => void load(), 30_000);
+    return () => { ctrl.abort(); clearInterval(id); };
+  }, [token]);
+
+  if (!token) {
+    return <Login onLogin={handleLogin} apiBase={API_BASE} />;
+  }
+
+  function renderPage() {
+    switch (path) {
+      case "/": return <CommandCentre />;
+      case "/updates": return <Updates />;
+      case "/review": return <ReviewQueue />;
+      case "/briefings": return <Briefings />;
+      case "/sources": return <Sources />;
+      case "/settings": return <Settings />;
+      default: return <CommandCentre />;
     }
   }
 
   return (
-    <main style={{ fontFamily: "system-ui", maxWidth: 1200, margin: "2rem auto", padding: 16 }}>
-      <h1>Sentinel Prism</h1>
-      {!token ? (
-        <form onSubmit={login}>
-          <p>
-            Log in to open the analyst console (dashboard, explorer, notifications; admins also
-            manage routing rules).
-          </p>
-          <p style={{ fontSize: "0.9rem", color: "#444" }}>
-            API base: {API_BASE} (set <code>VITE_API_URL</code> if needed).
-          </p>
-          <div style={{ marginBottom: 8 }}>
-            <label>
-              Email{" "}
-              <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required />
-            </label>
-          </div>
-          <div style={{ marginBottom: 8 }}>
-            <label>
-              Password{" "}
-              <input
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                type="password"
-                required
-              />
-            </label>
-          </div>
-          <button type="submit">Login</button>
-        </form>
-      ) : (
-        <>
-          <p>
-            <button type="button" onClick={logout}>
-              Log out
-            </button>
-          </p>
-          <Dashboard apiBase={API_BASE} token={token} />
-          <UpdateExplorer apiBase={API_BASE} token={token} userRole={me?.role ?? null} />
-          {canViewOps(me?.role ?? null) ? (
-            <OpsDashboard apiBase={API_BASE} token={token} onUnauthorized={logout} />
-          ) : null}
-          <AuditEventSearch apiBase={API_BASE} token={token} onUnauthorized={logout} />
-          <RunReplay apiBase={API_BASE} token={token} onUnauthorized={logout} />
-          {me === null ? (
-            !err ? (
-              <p style={{ marginTop: "2rem" }} aria-live="polite">
-                Loading account…
-              </p>
-            ) : null
-          ) : me.role === "admin" ? (
-            <>
-              <FeedbackMetricsAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
-              <GoldenSetPolicyAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
-              <ClassificationPolicyAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
-              <RoutingRulesAdmin apiBase={API_BASE} token={token} onUnauthorized={logout} />
-            </>
-          ) : (
-            <section style={{ marginTop: "2rem", color: "#555" }}>
-              <p>
-                Signed in as <strong>{me.email}</strong> ({me.role}). Routing rule administration
-                is available to admin accounts only.
-              </p>
-            </section>
-          )}
-          <h2 style={{ marginTop: "2rem" }}>Notifications</h2>
-          <p style={{ fontSize: "0.9rem", color: "#444" }}>
-            In-app inbox (Story 5.2); critical routed items for your team.
-          </p>
-          <ul style={{ listStyle: "none", padding: 0 }}>
-            {items.map((n) => (
-              <li
-                key={n.id}
-                style={{
-                  borderBottom: "1px solid #ccc",
-                  padding: "8px 0",
-                  opacity: n.read_at ? 0.6 : 1,
-                }}
-              >
-                <strong>{n.title}</strong>{" "}
-                <span style={{ fontSize: "0.8rem", color: "#666" }}>
-                  [{n.severity}] {n.team_slug}
-                </span>{" "}
-                {n.read_at ? "(read)" : "(unread)"}
-                <br />
-                <button type="button" onClick={() => markRead(n.id)} disabled={!!n.read_at}>
-                  Mark read
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-      {err && <pre style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{err}</pre>}
-    </main>
+    <AuthContext.Provider value={{ token, me, logout, apiBase: API_BASE }}>
+      <div className="app-shell">
+        <Sidebar currentPath={path} navigate={navigate} reviewCount={reviewCount} />
+        <main className="app-main">
+          {renderPage()}
+        </main>
+      </div>
+    </AuthContext.Provider>
   );
 }
