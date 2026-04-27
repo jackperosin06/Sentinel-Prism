@@ -11,6 +11,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sentinel_prism.observability import obs_ctx
 from sentinel_prism.db.models import Source
 from sentinel_prism.db.repositories import sources as sources_repo
 from sentinel_prism.db.session import get_session_factory
@@ -62,7 +63,10 @@ class PollScheduler:
             self._scheduler = None
             raise
         self._started = True
-        logger.info("Poll scheduler started")
+        logger.info(
+            "Poll scheduler started",
+            extra={"event": "poll_scheduler_started", "ctx": obs_ctx()},
+        )
         return True
 
     async def shutdown(self) -> None:
@@ -71,7 +75,10 @@ class PollScheduler:
         self._scheduler.shutdown(wait=True)
         self._scheduler = None
         self._started = False
-        logger.info("Poll scheduler stopped")
+        logger.info(
+            "Poll scheduler stopped",
+            extra={"event": "poll_scheduler_stopped", "ctx": obs_ctx()},
+        )
 
     def poll_job_ids(self) -> frozenset[str]:
         """Registered poll job ids (``poll:<uuid>``) — for tests and operators."""
@@ -98,6 +105,13 @@ class PollScheduler:
             row = await sources_repo.get_source_by_id(session, source_id)
             if row is None or not row.enabled:
                 return
+        logger.info(
+            "poll_scheduled_fire",
+            extra={
+                "event": "poll_scheduled_fire",
+                "ctx": obs_ctx(source_id=str(source_id)),
+            },
+        )
         await execute_poll(source_id, trigger="scheduled")
 
     async def _upsert_job_for_source_row(self, row: Source) -> None:

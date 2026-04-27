@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -22,6 +24,15 @@ from sentinel_prism.graph.routing import (
 from sentinel_prism.graph.state import AgentState
 
 
+def _route_regulatory_start(
+    state: AgentState,
+) -> Literal["scout", "classify"]:
+    # After a successful connector poll, ingest finished before the graph: skip re-fetch.
+    if state.get("ingestion_entry") == "post_poll":
+        return "classify"
+    return "scout"
+
+
 def build_regulatory_pipeline_graph() -> StateGraph:
     """Construct the regulatory pipeline graph (nodes and edges only, not compiled).
 
@@ -40,7 +51,14 @@ def build_regulatory_pipeline_graph() -> StateGraph:
     builder.add_node("human_review_gate", node_human_review_gate)
     builder.add_node("brief", node_brief)
     builder.add_node("route", node_route)
-    builder.add_edge(START, "scout")
+    builder.add_conditional_edges(
+        START,
+        _route_regulatory_start,
+        {
+            "scout": "scout",
+            "classify": "classify",
+        },
+    )
     builder.add_edge("scout", "normalize")
     builder.add_edge("normalize", "classify")
     builder.add_conditional_edges(

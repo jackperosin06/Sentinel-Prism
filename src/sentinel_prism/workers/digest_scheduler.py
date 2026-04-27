@@ -8,6 +8,7 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from sentinel_prism.db.session import get_session_factory
+from sentinel_prism.observability import obs_ctx
 from sentinel_prism.services.notifications.digest_flush import flush_digest_queue_once
 from sentinel_prism.services.notifications.notification_policy import load_notification_policy
 
@@ -82,7 +83,7 @@ class DigestScheduler:
             "Digest scheduler started",
             extra={
                 "event": "digest_scheduler_started",
-                "ctx": {"interval_seconds": policy.digest_flush_interval_seconds},
+                "ctx": obs_ctx(interval_seconds=policy.digest_flush_interval_seconds),
             },
         )
         return True
@@ -93,11 +94,18 @@ class DigestScheduler:
         self._scheduler.shutdown(wait=True)
         self._scheduler = None
         self._started = False
-        logger.info("Digest scheduler stopped")
+        logger.info(
+            "Digest scheduler stopped",
+            extra={"event": "digest_scheduler_stopped", "ctx": obs_ctx()},
+        )
 
     async def _flush_job(self) -> None:
         try:
             factory = get_session_factory()
+            logger.info(
+                "digest_flush_job_start",
+                extra={"event": "digest_flush_job_start", "ctx": obs_ctx()},
+            )
             await flush_digest_queue_once(session_factory=factory)
         except Exception:
             logger.exception("digest_flush_job_failed")

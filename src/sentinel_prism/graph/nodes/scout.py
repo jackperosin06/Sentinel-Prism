@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from sentinel_prism.observability import obs_ctx
 from sentinel_prism.db.models import PipelineAuditAction, SourceType
 from sentinel_prism.db.repositories import captures as captures_repo
 from sentinel_prism.db.repositories import sources as sources_repo
@@ -22,12 +23,14 @@ from sentinel_prism.services.connectors.scout_fetch import (
 )
 
 logger = logging.getLogger(__name__)
+_NODE_ID = "scout"
 
 
 async def node_scout(state: AgentState) -> dict[str, Any]:
     run_id = state.get("run_id")
     if not run_id or not str(run_id).strip():
         raise ValueError("AgentState.run_id is required but missing or empty")
+    run_id = str(run_id).strip()
 
     sid = state.get("source_id")
     if not sid or not str(sid).strip():
@@ -35,7 +38,11 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_skipped",
-                "ctx": {"run_id": run_id, "reason": "source_id_required"},
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    reason="source_id_required",
+                ),
             },
         )
         return {
@@ -68,11 +75,12 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_db_error",
-                "ctx": {
-                    "run_id": run_id,
-                    "source_id": str(source_uuid),
-                    "error_class": type(exc).__name__,
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    source_id=str(source_uuid),
+                    error_class=type(exc).__name__,
+                ),
             },
         )
         return {
@@ -91,7 +99,7 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_skipped",
-                "ctx": {"run_id": run_id, "reason": "source_not_found"},
+                "ctx": obs_ctx(node_id=_NODE_ID, run_id=run_id, reason="source_not_found"),
             },
         )
         return {
@@ -109,7 +117,7 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_skipped",
-                "ctx": {"run_id": run_id, "reason": "source_disabled"},
+                "ctx": obs_ctx(node_id=_NODE_ID, run_id=run_id, reason="source_disabled"),
             },
         )
         return {
@@ -132,11 +140,12 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_skipped",
-                "ctx": {
-                    "run_id": run_id,
-                    "reason": "unsupported_source_type",
-                    "source_type": str(source_type),
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    reason="unsupported_source_type",
+                    source_type=str(source_type),
+                ),
             },
         )
         return {
@@ -165,12 +174,13 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_fetch_failed",
-                "ctx": {
-                    "run_id": run_id,
-                    "source_id": str(source_uuid),
-                    "error_class": exc.error_class,
-                    "fetch_path": "primary",
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    source_id=str(source_uuid),
+                    error_class=exc.error_class,
+                    fetch_path="primary",
+                ),
             },
         )
         return {
@@ -189,13 +199,14 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_fetch_failed",
-                "ctx": {
-                    "run_id": run_id,
-                    "source_id": str(source_uuid),
-                    "primary_error_class": both.primary.error_class,
-                    "fallback_error_class": both.fallback.error_class,
-                    "fetch_path": "both",
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    source_id=str(source_uuid),
+                    primary_error_class=both.primary.error_class,
+                    fallback_error_class=both.fallback.error_class,
+                    fetch_path="both",
+                ),
             },
         )
         return {
@@ -214,12 +225,13 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_fetch_failed",
-                "ctx": {
-                    "run_id": run_id,
-                    "source_id": str(source_uuid),
-                    "error_class": type(exc).__name__,
-                    "fetch_path": "fallback",
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    source_id=str(source_uuid),
+                    error_class=type(exc).__name__,
+                    fetch_path="fallback",
+                ),
             },
         )
         return {
@@ -238,12 +250,13 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
             "graph_scout",
             extra={
                 "event": "graph_scout_fetch_failed",
-                "ctx": {
-                    "run_id": run_id,
-                    "source_id": str(source_uuid),
-                    "error_class": type(exc).__name__,
-                    "fetch_path": "primary",
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    source_id=str(source_uuid),
+                    error_class=type(exc).__name__,
+                    fetch_path="primary",
+                ),
             },
         )
         return {
@@ -263,12 +276,13 @@ async def node_scout(state: AgentState) -> dict[str, Any]:
         "graph_scout",
         extra={
             "event": "graph_scout_fetched",
-            "ctx": {
-                "run_id": run_id,
-                "source_id": str(source_uuid),
-                "item_count": len(items),
-                "fetch_outcome": outcome,
-            },
+            "ctx": obs_ctx(
+                node_id=_NODE_ID,
+                run_id=run_id,
+                source_id=str(source_uuid),
+                item_count=len(items),
+                fetch_outcome=outcome,
+            ),
         },
     )
     samples: list[str] = []

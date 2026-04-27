@@ -9,6 +9,7 @@ from typing import Any
 from sentinel_prism.db.models import PipelineAuditAction
 from sentinel_prism.db.repositories import audit_events as audit_events_repo
 from sentinel_prism.db.session import get_session_factory
+from sentinel_prism.graph.replay_context import in_replay_mode
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ async def record_pipeline_audit_event(
     Invalid ``run_id`` (non-UUID) is logged in the repository and does not produce
     errors here — the pipeline continues (AC #1).
     """
+
+    if in_replay_mode():
+        return []
 
     try:
         factory = get_session_factory()

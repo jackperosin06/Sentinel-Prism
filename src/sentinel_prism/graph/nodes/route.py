@@ -8,10 +8,12 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
+from sentinel_prism.observability import obs_ctx
 from sentinel_prism.db.models import PipelineAuditAction, RoutingRule
 from sentinel_prism.db.repositories import audit_events as audit_events_repo
 from sentinel_prism.db.repositories import routing_rules as routing_rules_repo
 from sentinel_prism.db.session import get_session_factory
+from sentinel_prism.graph.replay_context import in_replay_mode
 from sentinel_prism.graph.state import AgentState
 from sentinel_prism.services.notifications.scheduling import (
     process_routed_notification_deliveries,
@@ -19,6 +21,7 @@ from sentinel_prism.services.notifications.scheduling import (
 from sentinel_prism.services.routing.resolve import RoutingRuleView, resolve_routing_decision
 
 logger = logging.getLogger(__name__)
+_NODE_ID = "route"
 
 
 def _safe_error_detail(exc: BaseException, *, limit: int = 200) -> str:
@@ -76,7 +79,7 @@ async def node_route(state: AgentState) -> dict[str, Any]:
     if not run_id or not str(run_id).strip():
         raise ValueError("AgentState.run_id is required but missing or empty")
     run_id = str(run_id).strip()
-    ctx: dict[str, Any] = {"run_id": run_id}
+    ctx: dict[str, Any] = obs_ctx(node_id=_NODE_ID, run_id=run_id)
 
     sid_raw = state.get("source_id")
     src_uuid: uuid.UUID | None = None
@@ -86,7 +89,7 @@ async def node_route(state: AgentState) -> dict[str, Any]:
         except (ValueError, TypeError, AttributeError):
             src_uuid = None
     if src_uuid is not None:
-        ctx["source_id"] = str(src_uuid)
+        ctx = {**ctx, "source_id": str(src_uuid)}
 
     existing_urls = {
         _norm_item_url(d.get("item_url"))
@@ -187,38 +190,39 @@ async def node_route(state: AgentState) -> dict[str, Any]:
         )
     delivery_events_merge: list[dict[str, Any]] = []
     if decisions:
-        try:
-            dev, enqueue_errors = await process_routed_notification_deliveries(
-                session_factory=get_session_factory(),
+        if not in_replay_mode():
+            try:
+                dev, enqueue_errors = await process_routed_notification_deliveries(
+                    session_factory=get_session_factory(),
+                    run_id=run_id,
+                    decisions=decisions,
+                )
+                delivery_events_merge.extend(dev)
+                errors.extend(enqueue_errors)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "graph_route",
+                    extra={
+                        "event": "routed_notifications_failed",
+                        "ctx": {**ctx, "error_class": type(exc).__name__},
+                    },
+                )
+                errors.append(
+                    {
+                        "step": "routed_notifications",
+                        "message": "routed_notifications_unhandled",
+                        "error_class": type(exc).__name__,
+                        "detail": _safe_error_detail(exc),
+                    }
+                )
+            audit_extra = await _emit_routing_audit_if_needed(
                 run_id=run_id,
-                decisions=decisions,
+                source_id=src_uuid,
+                ctx=ctx,
+                new_count=len(decisions),
+                skipped_duplicates=skipped,
             )
-            delivery_events_merge.extend(dev)
-            errors.extend(enqueue_errors)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "graph_route",
-                extra={
-                    "event": "routed_notifications_failed",
-                    "ctx": {**ctx, "error_class": type(exc).__name__},
-                },
-            )
-            errors.append(
-                {
-                    "step": "routed_notifications",
-                    "message": "routed_notifications_unhandled",
-                    "error_class": type(exc).__name__,
-                    "detail": _safe_error_detail(exc),
-                }
-            )
-        audit_extra = await _emit_routing_audit_if_needed(
-            run_id=run_id,
-            source_id=src_uuid,
-            ctx=ctx,
-            new_count=len(decisions),
-            skipped_duplicates=skipped,
-        )
-        errors.extend(audit_extra)
+            errors.extend(audit_extra)
     out: dict[str, Any] = {"routing_decisions": decisions}
     if delivery_events_merge:
         out["delivery_events"] = delivery_events_merge

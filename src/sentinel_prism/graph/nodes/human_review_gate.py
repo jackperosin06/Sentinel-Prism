@@ -22,9 +22,12 @@ from sentinel_prism.graph.pipeline_review import (
     classification_summaries_for_queue,
     record_review_queue_projection,
 )
+from sentinel_prism.graph.replay_context import in_replay_mode
 from sentinel_prism.graph.state import AgentState
+from sentinel_prism.observability import obs_ctx
 
 logger = logging.getLogger(__name__)
+_NODE_ID = "human_review_gate"
 
 
 def _classification_copy_list(state: AgentState) -> list[dict[str, Any]]:
@@ -205,8 +208,15 @@ def apply_human_review_resume(
 
 
 async def node_human_review_gate(state: AgentState) -> dict[str, Any]:
+    if in_replay_mode():
+        # Replay must be non-destructive and must not interrupt; clear the flag
+        # so the replay run can continue through the tail of the pipeline.
+        flags = dict(state.get("flags") or {})
+        flags["needs_human_review"] = False
+        return {"flags": flags}
+
     run_id = state.get("run_id") or ""
-    ctx: dict[str, Any] = {"run_id": run_id}
+    ctx: dict[str, Any] = obs_ctx(node_id=_NODE_ID, run_id=str(run_id).strip())
     sid_raw = state.get("source_id")
     # Defense in depth: ``new_pipeline_state`` already coerces ``source_id`` to
     # ``str``, but checkpoint restoration / direct graph invocations may inject
@@ -214,7 +224,7 @@ async def node_human_review_gate(state: AgentState) -> dict[str, Any]:
     # code can assume a plain string.
     sid = str(sid_raw) if sid_raw is not None else None
     if sid is not None:
-        ctx["source_id"] = sid
+        ctx = {**ctx, "source_id": sid}
 
     logger.info(
         "graph_human_review_gate",

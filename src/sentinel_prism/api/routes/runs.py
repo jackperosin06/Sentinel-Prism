@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
@@ -41,6 +42,9 @@ from sentinel_prism.db.models import PipelineAuditAction, User, UserRole
 from sentinel_prism.db.repositories import audit_events as audit_events_repo
 from sentinel_prism.db.repositories import review_queue as review_queue_repo
 from sentinel_prism.db.session import get_db
+from sentinel_prism.graph.checkpoints import use_postgres_pipeline_checkpointer
+from sentinel_prism.graph.replay import compile_replay_tail_graph
+from sentinel_prism.graph.replay_context import replay_mode
 from sentinel_prism.services.llm.classification import IMPACT_CATEGORIES_VOCAB
 
 logger = logging.getLogger(__name__)
@@ -75,6 +79,7 @@ _PRE_REJECT_SNAPSHOT_MAX = 20
 # append + queue delete), so 30s is a generous headroom; tune via ops if real
 # telemetry shows otherwise.
 _GRAPH_RESUME_TIMEOUT_S = 30.0
+_GRAPH_REPLAY_TIMEOUT_S = 60.0
 
 
 def get_compiled_regulatory_graph(request: Request) -> CompiledStateGraph:
@@ -293,6 +298,42 @@ class ResumeRunOut(BaseModel):
     run_id: UUID
     decision: ReviewDecision
     status: str = "completed"
+
+
+class ReplayRunIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    from_node: str = Field(
+        default="classify",
+        description="First node to replay (minimum supported: classify).",
+    )
+    to_node: str = Field(
+        default="route",
+        description="Final node to replay (minimum supported: route).",
+    )
+
+    @model_validator(mode="after")
+    def _validate_nodes(self) -> "ReplayRunIn":
+        allowed = frozenset(
+            {"scout", "normalize", "classify", "human_review_gate", "brief", "route"}
+        )
+        if self.from_node not in allowed:
+            raise ValueError(f"from_node must be one of {sorted(allowed)}")
+        if self.to_node not in allowed:
+            raise ValueError(f"to_node must be one of {sorted(allowed)}")
+        return self
+
+
+class ReplayRunOut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    original_run_id: str
+    replay_run_id: str
+    replayed_nodes: list[str]
+    started_at: datetime
+    finished_at: datetime
+    status: str
+    errors: list[ErrorDetailRow] = Field(default_factory=list)
 
 
 def _audit_action_for_decision(decision: ReviewDecision) -> PipelineAuditAction:
@@ -718,3 +759,121 @@ def _snapshot_row(row: dict[str, Any]) -> dict[str, Any]:
         "rationale": rationale,
         "impact_categories": cats,
     }
+
+
+@router.post("/{run_id}/replay", response_model=ReplayRunOut)
+async def replay_run_from_checkpoint(
+    run_id: UUID,
+    body: ReplayRunIn,
+    request: Request,
+    _user: User = Depends(require_roles(UserRole.ANALYST, UserRole.ADMIN)),
+) -> ReplayRunOut:
+    """Replay a tail segment from persisted checkpoint state (Story 8.2)."""
+
+    if not use_postgres_pipeline_checkpointer():
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Replay requires a persistent checkpointer (Postgres). Set PIPELINE_CHECKPOINTER=postgres and DATABASE_URL.",
+        )
+
+    started_at = datetime.now(timezone.utc)
+
+    def _unsupported(message: str) -> ReplayRunOut:
+        return ReplayRunOut(
+            original_run_id=str(run_id),
+            replay_run_id="",
+            replayed_nodes=[],
+            started_at=started_at,
+            finished_at=datetime.now(timezone.utc),
+            status="unsupported",
+            errors=[
+                ErrorDetailRow(
+                    step="replay",
+                    message="unsupported",
+                    error_class="UnsupportedReplaySegment",
+                    detail=message,
+                )
+            ],
+        )
+
+    if body.to_node != "route":
+        return _unsupported("Only to_node='route' is supported.")
+    if body.from_node == "normalize":
+        return _unsupported("Replay from 'normalize' is not supported (offline replay uses checkpointed classifications).")
+    if body.from_node not in {"classify", "human_review_gate", "brief"}:
+        return _unsupported("Only from_node in {'classify','human_review_gate','brief'} is supported.")
+
+    graph = get_compiled_regulatory_graph(request)
+    original_cfg: dict[str, Any] = {"configurable": {"thread_id": str(run_id)}}
+    snap = await graph.aget_state(original_cfg)
+    values = getattr(snap, "values", None) or {}
+    if not values:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail="No checkpoint state found for this run",
+        )
+
+    replay_id = uuid.uuid4()
+    replay_cfg: dict[str, Any] = {"configurable": {"thread_id": str(replay_id)}}
+
+    state_seed: dict[str, Any] = dict(values)
+    state_seed["run_id"] = str(replay_id)
+    flags = dict(state_seed.get("flags") or {})
+    flags["replay_mode"] = True
+    flags["replay_original_run_id"] = str(run_id)
+    state_seed["flags"] = flags
+
+    plan = compile_replay_tail_graph(from_node=body.from_node)
+    try:
+        with replay_mode():
+            out = await asyncio.wait_for(
+                plan.graph.ainvoke(state_seed, replay_cfg),
+                timeout=_GRAPH_REPLAY_TIMEOUT_S,
+            )
+        finished_at = datetime.now(timezone.utc)
+        status_out = "completed"
+    except asyncio.TimeoutError:
+        finished_at = datetime.now(timezone.utc)
+        status_out = "failed"
+        out = {
+            "errors": [
+                {
+                    "step": "replay",
+                    "message": "replay_timeout",
+                    "error_class": "TimeoutError",
+                    "detail": f"timeout_s={_GRAPH_REPLAY_TIMEOUT_S}",
+                }
+            ]
+        }
+    except Exception as exc:  # noqa: BLE001
+        finished_at = datetime.now(timezone.utc)
+        status_out = "failed"
+        out = {
+            "errors": [
+                {
+                    "step": "replay",
+                    "message": "replay_failed",
+                    "error_class": type(exc).__name__,
+                    "detail": str(exc)[:200],
+                }
+            ]
+        }
+
+    raw_err = out.get("errors") or []
+    errors: list[ErrorDetailRow] = []
+    for entry in raw_err:
+        safe = _safe_error(entry)
+        if safe is not None:
+            errors.append(safe)
+
+    return ReplayRunOut(
+        original_run_id=str(run_id),
+        replay_run_id=str(replay_id),
+        replayed_nodes=plan.replayed_nodes,
+        started_at=started_at,
+        finished_at=finished_at,
+        status=(
+            "partial" if status_out == "completed" and errors else status_out
+        ),
+        errors=errors,
+    )

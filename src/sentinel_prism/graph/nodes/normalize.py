@@ -6,6 +6,7 @@ import logging
 import uuid
 from typing import Any
 
+from sentinel_prism.observability import obs_ctx
 from sentinel_prism.db.models import PipelineAuditAction
 from sentinel_prism.db.repositories import sources as sources_repo
 from sentinel_prism.db.session import get_session_factory
@@ -18,12 +19,14 @@ from sentinel_prism.services.ingestion.normalize import (
 )
 
 logger = logging.getLogger(__name__)
+_NODE_ID = "normalize"
 
 
 async def node_normalize(state: AgentState) -> dict[str, Any]:
     run_id = state.get("run_id")
     if not run_id or not str(run_id).strip():
         raise ValueError("AgentState.run_id is required but missing or empty")
+    run_id = str(run_id).strip()
 
     sid = state.get("source_id")
     if not sid or not str(sid).strip():
@@ -31,7 +34,7 @@ async def node_normalize(state: AgentState) -> dict[str, Any]:
             "graph_normalize",
             extra={
                 "event": "graph_normalize_skipped",
-                "ctx": {"run_id": run_id, "reason": "source_id_required"},
+                "ctx": obs_ctx(node_id=_NODE_ID, run_id=run_id, reason="source_id_required"),
             },
         )
         return {
@@ -57,7 +60,7 @@ async def node_normalize(state: AgentState) -> dict[str, Any]:
             "graph_normalize",
             extra={
                 "event": "graph_normalize_empty_raw",
-                "ctx": {"run_id": run_id, "source_id": str(source_uuid)},
+                "ctx": obs_ctx(node_id=_NODE_ID, run_id=run_id, source_id=str(source_uuid)),
             },
         )
         # AC #3: empty-but-successful completion still emits an audit row so
@@ -81,11 +84,12 @@ async def node_normalize(state: AgentState) -> dict[str, Any]:
             "graph_normalize",
             extra={
                 "event": "graph_normalize_db_error",
-                "ctx": {
-                    "run_id": run_id,
-                    "source_id": str(source_uuid),
-                    "error_class": type(exc).__name__,
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    source_id=str(source_uuid),
+                    error_class=type(exc).__name__,
+                ),
             },
         )
         return {
@@ -140,11 +144,12 @@ async def node_normalize(state: AgentState) -> dict[str, Any]:
         "graph_normalize",
         extra={
             "event": "graph_normalize_done",
-            "ctx": {
-                "run_id": run_id,
-                "source_id": str(source_uuid),
-                "normalized_count": len(norms),
-            },
+            "ctx": obs_ctx(
+                node_id=_NODE_ID,
+                run_id=run_id,
+                source_id=str(source_uuid),
+                normalized_count=len(norms),
+            ),
         },
     )
     audit_errs = await record_pipeline_audit_event(

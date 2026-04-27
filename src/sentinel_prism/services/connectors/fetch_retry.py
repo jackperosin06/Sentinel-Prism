@@ -49,6 +49,21 @@ RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 NON_RETRYABLE_HTTP_STATUSES = frozenset({400, 401, 403, 404, 405, 410, 422})
 
 
+def _response_preview(resp: httpx.Response, *, max_bytes: int = 2048) -> str | None:
+    """Return a small, best-effort response body preview for logs."""
+
+    try:
+        raw = (resp.content or b"")[:max_bytes]
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return raw.decode(resp.encoding or "utf-8", errors="replace")
+    except Exception:
+        return raw.decode("utf-8", errors="replace")
+
+
 def _sleep_with_backoff(attempt_index: int) -> float:
     """Return delay before attempt ``attempt_index`` (1-based), after jitter."""
 
@@ -77,7 +92,12 @@ async def run_http_attempt_with_retry(
         except httpx.HTTPStatusError as exc:
             last_exc = exc
             code = exc.response.status_code
-            u = httpx.URL(url)
+            req_url = str(getattr(getattr(exc, "request", None), "url", "") or url)
+            resp_url = str(getattr(exc.response, "url", "") or "")
+            u = httpx.URL(req_url or url)
+            content_type = exc.response.headers.get("content-type")
+            location = exc.response.headers.get("location")
+            preview = _response_preview(exc.response)
             if code in NON_RETRYABLE_HTTP_STATUSES:
                 msg = f"{failure_label}: HTTP {code}"
                 logger.warning(
@@ -85,10 +105,18 @@ async def run_http_attempt_with_retry(
                     extra={
                         "source_id": str(source_id),
                         "trigger": trigger,
+                        "url": req_url or url,
+                        "final_url": resp_url or None,
                         "url_host": u.host,
                         "url_path": u.path,
+                        "url_query": u.query.decode("utf-8", errors="replace")
+                        if u.query
+                        else None,
                         "attempt": attempt,
                         "http_status": code,
+                        "content_type": content_type,
+                        "location": location,
+                        "response_preview": preview,
                         "error_class": type(exc).__name__,
                         "error": str(exc),
                     },
@@ -101,10 +129,18 @@ async def run_http_attempt_with_retry(
                     extra={
                         "source_id": str(source_id),
                         "trigger": trigger,
+                        "url": req_url or url,
+                        "final_url": resp_url or None,
                         "url_host": u.host,
                         "url_path": u.path,
+                        "url_query": u.query.decode("utf-8", errors="replace")
+                        if u.query
+                        else None,
                         "attempt": attempt,
                         "http_status": code,
+                        "content_type": content_type,
+                        "location": location,
+                        "response_preview": preview,
                         "error_class": type(exc).__name__,
                         "error": str(exc),
                     },
@@ -115,10 +151,18 @@ async def run_http_attempt_with_retry(
                 extra={
                     "source_id": str(source_id),
                     "trigger": trigger,
+                    "url": req_url or url,
+                    "final_url": resp_url or None,
                     "url_host": u.host,
                     "url_path": u.path,
+                    "url_query": u.query.decode("utf-8", errors="replace")
+                    if u.query
+                    else None,
                     "attempt": attempt,
                     "http_status": code,
+                    "content_type": content_type,
+                    "location": location,
+                    "response_preview": preview,
                     "error_class": type(exc).__name__,
                     "error": str(exc),
                 },
@@ -138,8 +182,12 @@ async def run_http_attempt_with_retry(
                 extra={
                     "source_id": str(source_id),
                     "trigger": trigger,
+                    "url": url,
                     "url_host": u.host,
                     "url_path": u.path,
+                    "url_query": u.query.decode("utf-8", errors="replace")
+                    if u.query
+                    else None,
                     "attempt": attempt,
                     "error_class": type(exc).__name__,
                     "error": str(exc),
@@ -155,8 +203,12 @@ async def run_http_attempt_with_retry(
                 extra={
                     "source_id": str(source_id),
                     "trigger": trigger,
+                    "url": url,
                     "url_host": u.host,
                     "url_path": u.path,
+                    "url_query": u.query.decode("utf-8", errors="replace")
+                    if u.query
+                    else None,
                     "attempt": attempt,
                     "error_class": type(exc).__name__,
                     "error": str(exc),
@@ -178,8 +230,10 @@ async def run_http_attempt_with_retry(
         extra={
             "source_id": str(source_id),
             "trigger": trigger,
+            "url": url,
             "url_host": u.host,
             "url_path": u.path,
+            "url_query": u.query.decode("utf-8", errors="replace") if u.query else None,
             "attempt": MAX_ATTEMPTS,
             "error_class": type(last_exc).__name__,
             "error": str(last_exc),

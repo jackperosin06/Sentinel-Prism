@@ -11,6 +11,7 @@ from sentinel_prism.db.models import PipelineAuditAction
 from sentinel_prism.db.repositories import review_queue as review_queue_repo
 from sentinel_prism.db.session import get_session_factory
 from sentinel_prism.graph.pipeline_audit import record_pipeline_audit_event
+from sentinel_prism.graph.replay_context import in_replay_mode
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,9 @@ async def record_review_queue_projection(
     run is still discoverable via audit search. ``interrupt()`` must run
     unconditionally so the checkpoint persists — therefore we do not raise.
     """
+
+    if in_replay_mode():
+        return
 
     try:
         factory = get_session_factory()

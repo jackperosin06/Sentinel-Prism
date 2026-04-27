@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
+from sentinel_prism.db.models import NormalizedUpdateRow
 from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
 
 DOCUMENT_TYPE_UNKNOWN = "unknown"
@@ -116,6 +117,30 @@ def normalized_update_to_state_dict(n: NormalizedUpdate) -> dict[str, Any]:
         "parser_confidence": n.parser_confidence,
         "extraction_quality": n.extraction_quality,
     }
+
+
+def normalized_update_orm_to_pipeline_state_dict(row: NormalizedUpdateRow) -> dict[str, Any]:
+    """``AgentState.normalized_updates`` shape for a persisted row (post-poll pipeline)."""
+
+    r = row
+    d = normalized_update_to_state_dict(
+        NormalizedUpdate(
+            source_id=r.source_id,
+            source_name=r.source_name,
+            jurisdiction=r.jurisdiction,
+            item_url=r.item_url,
+            title=r.title,
+            published_at=r.published_at,
+            document_type=r.document_type,
+            body_snippet=r.body_snippet,
+            summary=r.summary,
+            extra_metadata=r.extra_metadata,
+            parser_confidence=r.parser_confidence,
+            extraction_quality=r.extraction_quality,
+        )
+    )
+    d["normalized_update_id"] = str(r.id)
+    return d
 
 
 def normalize_scout_item(

@@ -17,13 +17,16 @@ from sentinel_prism.db.models import NormalizedUpdateRow, PipelineAuditAction
 from sentinel_prism.db.repositories import briefings as briefings_repo
 from sentinel_prism.db.session import get_session_factory
 from sentinel_prism.graph.pipeline_audit import record_pipeline_audit_event
+from sentinel_prism.graph.replay_context import in_replay_mode
 from sentinel_prism.graph.state import AgentState
+from sentinel_prism.observability import obs_ctx
 from sentinel_prism.services.briefing.settings import (
     BriefingGroupingSettings,
     load_briefing_grouping_settings,
 )
 
 logger = logging.getLogger(__name__)
+_NODE_ID = "brief"
 
 
 @dataclass(frozen=True)
@@ -337,7 +340,7 @@ def _build_groups_json(
 async def node_brief(state: AgentState) -> dict[str, Any]:
     run_id_raw = state.get("run_id") or ""
     run_id = str(run_id_raw).strip()
-    ctx: dict[str, Any] = {"run_id": run_id}
+    ctx: dict[str, Any] = obs_ctx(node_id=_NODE_ID, run_id=run_id)
     if not run_id:
         return {
             "errors": [
@@ -436,72 +439,77 @@ async def node_brief(state: AgentState) -> dict[str, Any]:
         except (ValueError, TypeError, AttributeError):
             src_uuid = None
     if src_uuid is not None:
-        ctx["source_id"] = str(src_uuid)
+        ctx = {**ctx, "source_id": str(src_uuid)}
 
-    # Narrow to ``SQLAlchemyError`` so programming errors (TypeError, KeyError,
-    # etc.) surface at ERROR with full traceback rather than being buried under
-    # the generic ``briefing_persist_failed`` warning alongside transient DB
-    # errors.
-    try:
-        factory = get_session_factory()
-        async with factory() as session:
-            bid, created = await briefings_repo.upsert_briefing_for_run(
-                session,
-                run_id=run_id,
-                source_id=src_uuid,
-                grouping_dimensions=list(settings.dimensions),
-                groups=groups_out,
+    if in_replay_mode():
+        # Replay is non-destructive — do not persist briefings or emit audits.
+        bid = uuid.uuid4()
+        created = False
+    else:
+        # Narrow to ``SQLAlchemyError`` so programming errors (TypeError, KeyError,
+        # etc.) surface at ERROR with full traceback rather than being buried under
+        # the generic ``briefing_persist_failed`` warning alongside transient DB
+        # errors.
+        try:
+            factory = get_session_factory()
+            async with factory() as session:
+                bid, created = await briefings_repo.upsert_briefing_for_run(
+                    session,
+                    run_id=run_id,
+                    source_id=src_uuid,
+                    grouping_dimensions=list(settings.dimensions),
+                    groups=groups_out,
+                )
+                await session.commit()
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "graph_brief",
+                extra={
+                    "event": "briefing_persist_failed",
+                    "ctx": {
+                        **ctx,
+                        "error_class": type(exc).__name__,
+                    },
+                },
             )
-            await session.commit()
-    except SQLAlchemyError as exc:
-        logger.warning(
-            "graph_brief",
-            extra={
-                "event": "briefing_persist_failed",
-                "ctx": {
-                    **ctx,
-                    "error_class": type(exc).__name__,
+            return {
+                "errors": [
+                    {
+                        "step": "brief",
+                        "message": "briefing_persist_failed",
+                        "error_class": type(exc).__name__,
+                        "detail": _safe_error_detail(exc),
+                    }
+                ]
+            }
+        except Exception as exc:
+            logger.error(
+                "graph_brief",
+                extra={
+                    "event": "briefing_persist_unexpected",
+                    "ctx": {
+                        **ctx,
+                        "error_class": type(exc).__name__,
+                    },
                 },
-            },
-        )
-        return {
-            "errors": [
-                {
-                    "step": "brief",
-                    "message": "briefing_persist_failed",
-                    "error_class": type(exc).__name__,
-                    "detail": _safe_error_detail(exc),
-                }
-            ]
-        }
-    except Exception as exc:
-        logger.error(
-            "graph_brief",
-            extra={
-                "event": "briefing_persist_unexpected",
-                "ctx": {
-                    **ctx,
-                    "error_class": type(exc).__name__,
-                },
-            },
-            exc_info=True,
-        )
-        return {
-            "errors": [
-                {
-                    "step": "brief",
-                    "message": "briefing_persist_unexpected",
-                    "error_class": type(exc).__name__,
-                    "detail": _safe_error_detail(exc),
-                }
-            ]
-        }
+                exc_info=True,
+            )
+            return {
+                "errors": [
+                    {
+                        "step": "brief",
+                        "message": "briefing_persist_unexpected",
+                        "error_class": type(exc).__name__,
+                        "detail": _safe_error_detail(exc),
+                    }
+                ]
+            }
 
     # Decision 4, Story 4.3: emit ``BRIEFING_GENERATED`` exactly once per run.
     # On conflict-update (``created is False``) skip the audit write so
     # operators relying on "1 audit row = 1 authored briefing" stay correct.
     audit_errs: list[dict[str, Any]] = []
-    if created:
+    if created and not in_replay_mode():
         audit_errs = await record_pipeline_audit_event(
             run_id=run_id,
             action=PipelineAuditAction.BRIEFING_GENERATED,
@@ -525,15 +533,14 @@ async def node_brief(state: AgentState) -> dict[str, Any]:
         },
     )
 
-    out: dict[str, Any] = {
-        "briefings": [
-            {
-                "run_id": run_id,
-                "briefing_id": str(bid),
-                "group_count": len(groups_out),
-            }
-        ]
+    row: dict[str, Any] = {
+        "run_id": run_id,
+        "briefing_id": str(bid),
+        "group_count": len(groups_out),
     }
+    if in_replay_mode():
+        row["groups"] = groups_out
+    out: dict[str, Any] = {"briefings": [row]}
     if audit_errs:
         out["errors"] = audit_errs
     return out

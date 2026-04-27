@@ -20,6 +20,9 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 PipelineTrigger = Literal["scheduled", "manual"]
 
 
+IngestionEntry = Literal["default", "post_poll"]
+
+
 class AgentState(TypedDict):
     """Canonical pipeline state; all orchestration flows through this shape (FR36)."""
 
@@ -27,6 +30,9 @@ class AgentState(TypedDict):
     tenant_id: NotRequired[str]
     source_id: NotRequired[str]
     trigger: NotRequired[PipelineTrigger]
+    # ``post_poll`` skips scout+normalize: ingest has already written rows; ``run_id``
+    # is set on those rows before ainvoke. Omitted/``default`` runs full graph from scout.
+    ingestion_entry: NotRequired[IngestionEntry]
     raw_items: Annotated[list[dict[str, Any]], operator.add]
     normalized_updates: Annotated[list[dict[str, Any]], operator.add]
     classifications: Annotated[list[dict[str, Any]], operator.add]
@@ -101,3 +107,25 @@ def new_pipeline_state(
             )
         state["trigger"] = trigger
     return state
+
+
+def new_post_poll_pipeline_state(
+    run_id: uuid.UUID | str,
+    *,
+    source_id: uuid.UUID | str,
+    trigger: PipelineTrigger,
+    normalized_updates: list[dict[str, Any]],
+) -> AgentState:
+    """Initial state for a run that continues from persisted ingest (poll) rows.
+
+    Skips ``scout`` and ``normalize``; :class:`NormalizedUpdateRow` must already
+    be committed with ``run_id`` set to the same value as this state's ``run_id``
+    (``thread_id``) so ``brief`` can load from the DB.
+    """
+
+    base = new_pipeline_state(run_id, source_id=source_id, trigger=trigger)
+    return {
+        **base,
+        "ingestion_entry": "post_poll",
+        "normalized_updates": list(normalized_updates),
+    }

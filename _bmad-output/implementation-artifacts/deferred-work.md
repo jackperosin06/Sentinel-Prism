@@ -1,5 +1,9 @@
 # Deferred work tracker
 
+## Deferred from: code review of 8-1-audit-event-search-api-and-ui.md (2026-04-27)
+
+- **Offset-based pagination if `total` changes between fetches:** `AuditEventSearch` advances `offset` with fixed page size. If the matching row set shrinks (another writer, or filters) while the operator pages, the UI can show an empty follow-up page or a disabled Next with rows still logically “after” the window. Same class of issue as other offset UIs. Revisit with cursor pagination or a refetch of `total` if operators report confusion.
+
 ## Deferred from: code review of 5-2-in-app-notifications.md (2026-04-20)
 
 - **`_norm_item_url` only strips whitespace — no URL canonicalization:** In-app notification dedupe key is `(run_id, item_url, user_id)` where `item_url` comes from `_norm_item_url(raw) = str(raw or "").strip()`. `https://Example.com/a` vs `https://example.com/a` vs `https://example.com/a/` produce separate inbox rows on retry or upstream-source drift. Deferred: mirrors existing `brief.py` / `route.py` normalization across Epics 3–5; full URL canonicalization (scheme/host lowercase, trailing-slash collapse, query-order normalization) belongs in a cross-cutting normalization/dedupe hardening pass, not in 5.2. [`src/sentinel_prism/services/notifications/in_app.py:23`, `src/sentinel_prism/graph/nodes/route.py:29`]

@@ -8,6 +8,7 @@ import uuid
 from collections import OrderedDict
 from typing import Any, Mapping
 
+from sentinel_prism.observability import obs_ctx
 from sentinel_prism.db.models import PipelineAuditAction
 from sentinel_prism.db.repositories import classification_policy as classification_policy_repo
 from sentinel_prism.db.session import get_session_factory
@@ -30,6 +31,7 @@ from sentinel_prism.services.llm.settings import get_classification_llm_settings
 from sentinel_prism.services.search.settings import get_web_search_settings
 
 logger = logging.getLogger(__name__)
+_NODE_ID = "classify"
 
 
 # Per-run web-search memoization (Story 3.7 review): LangGraph's ``RetryPolicy``
@@ -114,6 +116,7 @@ async def node_classify(
     run_id = state.get("run_id")
     if not run_id or not str(run_id).strip():
         raise ValueError("AgentState.run_id is required but missing or empty")
+    run_id = str(run_id).strip()
 
     settings = get_classification_llm_settings()
     ws_settings = get_web_search_settings()
@@ -153,7 +156,7 @@ async def node_classify(
             "graph_classify",
             extra={
                 "event": "graph_classify_empty",
-                "ctx": {"run_id": run_id},
+                "ctx": obs_ctx(node_id=_NODE_ID, run_id=run_id),
             },
         )
         # AC #3: empty-but-successful completion still emits an audit row.
@@ -261,13 +264,14 @@ async def node_classify(
                             "graph_classify",
                             extra={
                                 "event": "graph_classify_web_search_error",
-                                "ctx": {
-                                    "run_id": run_id,
-                                    "step": "classify_web_search",
-                                    "error_class": type(exc).__name__,
-                                    "detail": _safe_detail,
-                                    "item_url": normalized.get("item_url"),
-                                },
+                                "ctx": obs_ctx(
+                                    node_id=_NODE_ID,
+                                    run_id=run_id,
+                                    step="classify_web_search",
+                                    error_class=type(exc).__name__,
+                                    detail=_safe_detail,
+                                    item_url=normalized.get("item_url"),
+                                ),
                             },
                         )
                         err_accum.append(
@@ -296,15 +300,16 @@ async def node_classify(
                     "graph_classify",
                     extra={
                         "event": "graph_classify_llm_transient",
-                        "ctx": {
-                            "run_id": run_id,
-                            "step": "classify",
-                            "model_id": model_id,
-                            "prompt_version": prompt_version,
-                            "error_class": type(exc).__name__,
-                            "detail": str(exc),
-                            "item_url": normalized.get("item_url"),
-                        },
+                        "ctx": obs_ctx(
+                            node_id=_NODE_ID,
+                            run_id=run_id,
+                            step="classify",
+                            model_id=model_id,
+                            prompt_version=prompt_version,
+                            error_class=type(exc).__name__,
+                            detail=str(exc),
+                            item_url=normalized.get("item_url"),
+                        ),
                     },
                 )
                 raise
@@ -312,13 +317,14 @@ async def node_classify(
                 "graph_classify",
                 extra={
                     "event": "graph_classify_llm_error",
-                    "ctx": {
-                        "run_id": run_id,
-                        "model_id": model_id,
-                        "prompt_version": prompt_version,
-                        "error_class": type(exc).__name__,
-                        "item_url": normalized.get("item_url"),
-                    },
+                    "ctx": obs_ctx(
+                        node_id=_NODE_ID,
+                        run_id=run_id,
+                        model_id=model_id,
+                        prompt_version=prompt_version,
+                        error_class=type(exc).__name__,
+                        item_url=normalized.get("item_url"),
+                    ),
                 },
             )
             err_accum.append(
@@ -345,12 +351,13 @@ async def node_classify(
             "graph_classify",
             extra={
                 "event": "graph_classify_llm_done",
-                "ctx": {
-                    "run_id": run_id,
-                    "model_id": model_id,
-                    "prompt_version": prompt_version,
-                    "item_url": normalized.get("item_url"),
-                },
+                "ctx": obs_ctx(
+                    node_id=_NODE_ID,
+                    run_id=run_id,
+                    model_id=model_id,
+                    prompt_version=prompt_version,
+                    item_url=normalized.get("item_url"),
+                ),
             },
         )
 
@@ -451,10 +458,11 @@ async def node_classify(
         "graph_classify",
         extra={
             "event": "graph_classify_done",
-            "ctx": {
-                "run_id": run_id,
-                "classification_count": len(classifications),
-            },
+            "ctx": obs_ctx(
+                node_id=_NODE_ID,
+                run_id=run_id,
+                classification_count=len(classifications),
+            ),
         },
     )
     return out

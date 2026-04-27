@@ -21,6 +21,7 @@ from sentinel_prism.services.connectors.scout_fetch import (
     PrimaryAndFallbackFailed,
     fetch_scout_items_with_fallback,
 )
+from sentinel_prism.graph.post_poll import schedule_regulatory_pipeline_after_ingest
 from sentinel_prism.services.connectors.scout_raw_item import ScoutRawItem
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,7 @@ async def execute_poll(
             extra={
                 "source_id": str(source_id),
                 "trigger": trigger,
+                "url": primary_url,
                 "url_host": _u.host,
                 "url_path": _u.path,
                 "error_class": primary_exc.error_class,
@@ -183,6 +185,7 @@ async def execute_poll(
             extra={
                 "source_id": str(source_id),
                 "trigger": trigger,
+                "url": fallback_url,
                 "url_host": _fu.host,
                 "url_path": _fu.path,
                 "error_class": type(fb_other_exc).__name__,
@@ -208,6 +211,7 @@ async def execute_poll(
             extra={
                 "source_id": str(source_id),
                 "trigger": trigger,
+                "url": primary_url,
                 "url_host": _u.host,
                 "url_path": _u.path,
                 "error_class": type(exc).__name__,
@@ -243,6 +247,7 @@ async def execute_poll(
     # The "dedup after" prefix is preserved for Story 2.4 compatibility; any new
     # stage must extend this comment and any downstream filters.
     failed_stage: str = "clear_poll_failure"
+    ingested_norm_ids: list[uuid.UUID] = []
     try:
         async with factory() as session:
             await sources_repo.clear_poll_failure(session, source_id)
@@ -251,13 +256,19 @@ async def execute_poll(
                 session, source_id, items
             )
             failed_stage = "persist"
-            await persist_new_items_after_dedup(
+            _ids = await persist_new_items_after_dedup(
                 session,
                 source_id=source_id,
                 source_name=source_name,
                 jurisdiction=source_jurisdiction,
                 new_items=new_items,
             )
+            if isinstance(_ids, list) and all(
+                isinstance(x, uuid.UUID) for x in _ids
+            ):
+                ingested_norm_ids = _ids
+            else:
+                ingested_norm_ids = []
             failed_stage = "metrics"
             # Explicit invariant check — ``assert`` would vanish under ``python -O``
             # and then pass ``fetch_path=None`` into ``record_poll_success_metrics``
@@ -299,6 +310,13 @@ async def execute_poll(
             )
             await session.commit()
         return []
+
+    if ingested_norm_ids:
+        schedule_regulatory_pipeline_after_ingest(
+            source_id=source_id,
+            trigger=trigger,
+            normalized_update_ids=ingested_norm_ids,
+        )
 
     logger.info(
         "poll_fetch_outcome",

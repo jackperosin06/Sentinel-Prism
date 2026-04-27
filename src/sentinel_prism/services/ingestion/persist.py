@@ -21,8 +21,10 @@ async def persist_new_items_after_dedup(
     source_name: str,
     jurisdiction: str,
     new_items: list[ScoutRawItem],
-) -> None:
+) -> list[uuid.UUID]:
     """Insert raw capture + normalized row per deduped item (same transaction as caller).
+
+    Returns ``normalized_updates.id`` for each inserted row (for downstream pipeline).
 
     Atomic for the whole batch: a failure on item N rolls back prior items too
     (so dedup fingerprints registered in the same session are also rolled back
@@ -32,8 +34,9 @@ async def persist_new_items_after_dedup(
 
     if not new_items:
         # Short-circuit: empty batches do no work and avoid noisy zero-count logs.
-        return
+        return []
 
+    out_ids: list[uuid.UUID] = []
     for item in new_items:
         # Each scout item is expected to carry its own ``source_id`` matching
         # the caller's. A mismatch indicates a multiplexed-poller regression and
@@ -58,6 +61,7 @@ async def persist_new_items_after_dedup(
             raw_capture_id=raw_id,
             normalized=normalized,
         )
+        out_ids.append(norm_id)
         logger.info(
             "capture_persisted",
             extra={
@@ -72,3 +76,4 @@ async def persist_new_items_after_dedup(
                 },
             },
         )
+    return out_ids

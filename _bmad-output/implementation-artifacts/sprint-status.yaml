@@ -1,5 +1,5 @@
 # generated: 2026-04-12T12:00:00Z
-# last_updated: 2026-04-27T11:31:00+10:00
+# last_updated: 2026-04-27T22:00:00+10:00
 # project: Sentinel Prism
 # project_key: NOKEY
 # tracking_system: file-system
@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: "2026-04-12T12:00:00Z"
-last_updated: "2026-04-27T11:31:00+10:00"
+last_updated: "2026-04-27T22:53:00+10:00"
 project: Sentinel Prism
 project_key: NOKEY
 tracking_system: file-system
@@ -97,8 +97,8 @@ development_status:
   7-4-golden-set-policy-and-configuration-history: done
   epic-7-retrospective: optional
 
-  epic-8: backlog
-  8-1-audit-event-search-api-and-ui: backlog
-  8-2-workflow-replay-from-persisted-state: backlog
-  8-3-cross-service-observability-dashboard-operator: backlog
+  epic-8: in-progress
+  8-1-audit-event-search-api-and-ui: done
+  8-2-workflow-replay-from-persisted-state: done
+  8-3-cross-service-observability-dashboard-operator: done
   epic-8-retrospective: optional

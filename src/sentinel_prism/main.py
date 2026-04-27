@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from sentinel_prism.api.routes import (
+    audit_events,
     auth,
     briefings,
     classification_policy,
@@ -20,6 +26,7 @@ from sentinel_prism.api.routes import (
     golden_set_policy,
     health,
     notifications,
+    ops,
     routing_rules,
     runs,
     sources,
@@ -37,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         postgres_uri_for_langgraph,
         use_postgres_pipeline_checkpointer,
     )
+    from sentinel_prism.graph.runtime import set_regulatory_graph
     from sentinel_prism.services.auth.providers.factory import get_auth_provider
     from sentinel_prism.services.auth.tokens import _algorithm, _secret
     from sentinel_prism.workers.digest_scheduler import get_digest_scheduler
@@ -67,9 +75,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         else:
             pipeline_checkpointer = dev_memory_checkpointer()
 
-        app.state.regulatory_graph = compile_regulatory_pipeline_graph(
-            checkpointer=pipeline_checkpointer
-        )
+        _graph = compile_regulatory_pipeline_graph(checkpointer=pipeline_checkpointer)
+        app.state.regulatory_graph = _graph
+        set_regulatory_graph(_graph)
 
         sched = get_poll_scheduler()
         scheduler_started = await sched.start()
@@ -105,6 +113,67 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Sentinel Prism", version="0.1.0", lifespan=lifespan)
+
+    def _request_id_from(request: Request) -> str:
+        rid = getattr(getattr(request, "state", None), "request_id", None)
+        return str(rid or "")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _http_exception_request_id_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> Response:
+        # `exc.detail` may be any object (including Exception instances) depending
+        # on call sites; ensure the payload is JSON-serializable.
+        resp = JSONResponse(
+            status_code=exc.status_code,
+            content=jsonable_encoder({"detail": exc.detail}),
+        )
+        rid = _request_id_from(request)
+        if rid:
+            resp.headers["X-Request-Id"] = rid
+        return resp
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_exception_request_id_handler(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        # Pydantic error contexts can include non-JSON-serializable objects
+        # (e.g., ValueError instances in `ctx`); encode defensively.
+        resp = JSONResponse(
+            status_code=422,
+            content=jsonable_encoder({"detail": exc.errors()}),
+        )
+        rid = _request_id_from(request)
+        if rid:
+            resp.headers["X-Request-Id"] = rid
+        return resp
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request, call_next):  # type: ignore[no-untyped-def]
+        # Simple, dependency-free request correlation id for NFR8. Use a header
+        # so operators can copy/paste it into log search tools.
+        rid = request.headers.get("x-request-id")
+        try:
+            request_id = str(uuid.UUID(str(rid))) if rid else str(uuid.uuid4())
+        except ValueError:
+            request_id = str(uuid.uuid4())
+        request.state.request_id = request_id
+        resp: Response = await call_next(request)
+        resp.headers["X-Request-Id"] = request_id
+        logger.info(
+            "http_request",
+            extra={
+                "event": "http_request",
+                "ctx": {
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": resp.status_code,
+                },
+            },
+        )
+        return resp
+
     _cors = os.environ.get("CORS_ORIGINS", "").strip()
     if _cors:
         cors_origins = [x.strip() for x in _cors.split(",") if x.strip()]
@@ -136,6 +205,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(dashboard.router)
     app.include_router(updates.router)
+    app.include_router(audit_events.router)
     app.include_router(auth.router)
     app.include_router(sources.router)
     app.include_router(runs.router)
@@ -147,6 +217,7 @@ def create_app() -> FastAPI:
     app.include_router(feedback_metrics.router)
     app.include_router(classification_policy.router)
     app.include_router(golden_set_policy.router)
+    app.include_router(ops.router)
     return app
 
 

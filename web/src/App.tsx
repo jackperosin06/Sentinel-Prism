@@ -1,11 +1,14 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 
+import { AuditEventSearch } from "./components/AuditEventSearch";
 import { ClassificationPolicyAdmin } from "./components/ClassificationPolicyAdmin";
 import { GoldenSetPolicyAdmin } from "./components/GoldenSetPolicyAdmin";
 import { Dashboard } from "./components/Dashboard";
 import { FeedbackMetricsAdmin } from "./components/FeedbackMetricsAdmin";
+import { OpsDashboard } from "./components/OpsDashboard";
 import { RoutingRulesAdmin } from "./components/RoutingRulesAdmin";
 import { UpdateExplorer } from "./components/UpdateExplorer";
+import { RunReplay } from "./components/RunReplay";
 import { readErrorMessage } from "./httpErrors";
 
 const TOKEN_KEY = "sentinel_prism_token";
@@ -45,6 +48,10 @@ type MeResponse = {
   role: string;
   is_active: boolean;
 };
+
+function canViewOps(role: string | null): boolean {
+  return role === "admin" || role === "analyst";
+}
 
 export default function App() {
   const [email, setEmail] = useState("");
@@ -193,6 +200,11 @@ export default function App() {
           </p>
           <Dashboard apiBase={API_BASE} token={token} />
           <UpdateExplorer apiBase={API_BASE} token={token} userRole={me?.role ?? null} />
+          {canViewOps(me?.role ?? null) ? (
+            <OpsDashboard apiBase={API_BASE} token={token} onUnauthorized={logout} />
+          ) : null}
+          <AuditEventSearch apiBase={API_BASE} token={token} onUnauthorized={logout} />
+          <RunReplay apiBase={API_BASE} token={token} onUnauthorized={logout} />
           {me === null ? (
             !err ? (
               <p style={{ marginTop: "2rem" }} aria-live="polite">

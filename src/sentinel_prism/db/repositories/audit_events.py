@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select, true as sql_true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sentinel_prism.db.audit_constants import (
@@ -16,7 +17,7 @@ from sentinel_prism.db.audit_constants import (
     GOLDEN_SET_CONFIG_AUDIT_RUN_ID,
     ROUTING_CONFIG_AUDIT_RUN_ID,
 )
-from sentinel_prism.db.models import AuditEvent, PipelineAuditAction
+from sentinel_prism.db.models import AuditEvent, NormalizedUpdateRow, PipelineAuditAction
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,14 @@ _MAX_URL_LENGTH = 512
 # raise (the audit row must always persist per AC #3) — we emit a warning so
 # operators can spot metadata bloat during story 3.8 roll-out and Epic 8.
 _MAX_METADATA_BYTES = 8192
+
+# When ``normalized_updates.run_id`` is null, bound audit rows by source + time
+# around the update's ``created_at`` (Story 8.1 — FR34).
+_NORMALIZED_UPDATE_AUDIT_HALF_WINDOW = timedelta(hours=24)
+
+DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 200
+MAX_SEARCH_OFFSET = 50_000
 
 
 def _parse_run_id(run_id: str | UUID) -> UUID | None:
@@ -273,3 +282,94 @@ async def list_recent_for_run(
         .limit(lim)
     )
     return list(res.all())
+
+
+def _clamp_search_pagination(*, limit: int, offset: int) -> tuple[int, int]:
+    lim = max(1, min(limit, MAX_SEARCH_LIMIT))
+    off = max(0, min(offset, MAX_SEARCH_OFFSET))
+    return lim, off
+
+
+def _audit_search_conditions(
+    *,
+    run_id: UUID | None,
+    source_id: UUID | None,
+    actor_user_id: UUID | None,
+    created_after: datetime | None,
+    created_before: datetime | None,
+    action: PipelineAuditAction | None,
+    normalized_update_row: NormalizedUpdateRow | None,
+) -> list[Any]:
+    clauses: list[Any] = []
+    if run_id is not None:
+        clauses.append(AuditEvent.run_id == run_id)
+    if source_id is not None:
+        clauses.append(AuditEvent.source_id == source_id)
+    if actor_user_id is not None:
+        clauses.append(AuditEvent.actor_user_id == actor_user_id)
+    if created_after is not None:
+        clauses.append(AuditEvent.created_at >= created_after)
+    if created_before is not None:
+        clauses.append(AuditEvent.created_at <= created_before)
+    if action is not None:
+        clauses.append(AuditEvent.action == action)
+
+    if normalized_update_row is not None:
+        nu = normalized_update_row
+        if nu.run_id is not None:
+            clauses.append(AuditEvent.run_id == nu.run_id)
+        else:
+            clauses.append(AuditEvent.source_id == nu.source_id)
+            t0 = nu.created_at - _NORMALIZED_UPDATE_AUDIT_HALF_WINDOW
+            t1 = nu.created_at + _NORMALIZED_UPDATE_AUDIT_HALF_WINDOW
+            clauses.append(AuditEvent.created_at >= t0)
+            clauses.append(AuditEvent.created_at <= t1)
+
+    return clauses
+
+
+async def search_audit_events(
+    session: AsyncSession,
+    *,
+    run_id: UUID | None = None,
+    source_id: UUID | None = None,
+    actor_user_id: UUID | None = None,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
+    action: PipelineAuditAction | None = None,
+    normalized_update_row: NormalizedUpdateRow | None = None,
+    limit: int = DEFAULT_SEARCH_LIMIT,
+    offset: int = 0,
+) -> tuple[list[AuditEvent], int]:
+    """Paginated audit search (Story 8.1 — FR34).
+
+    When ``normalized_update_row`` is set, filters narrow to audits for that
+    update: by ``run_id`` when the row has one; otherwise ``source_id`` plus
+    ``created_at`` within ±24h of the update's ``created_at`` (inclusive bounds).
+    These predicates are **and**-merged with the explicit filter arguments.
+    """
+
+    lim, off = _clamp_search_pagination(limit=limit, offset=offset)
+    cond = _audit_search_conditions(
+        run_id=run_id,
+        source_id=source_id,
+        actor_user_id=actor_user_id,
+        created_after=created_after,
+        created_before=created_before,
+        action=action,
+        normalized_update_row=normalized_update_row,
+    )
+    where_expr = and_(*cond) if cond else sql_true()
+
+    count_stmt = select(func.count()).select_from(AuditEvent).where(where_expr)
+    total = int(await session.scalar(count_stmt) or 0)
+
+    list_stmt = (
+        select(AuditEvent)
+        .where(where_expr)
+        .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+        .limit(lim)
+        .offset(off)
+    )
+    res = await session.scalars(list_stmt)
+    return list(res.all()), total
